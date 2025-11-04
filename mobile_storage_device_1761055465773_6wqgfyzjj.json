@@ -1,0 +1,22 @@
+{
+  "user_session": {
+    "user": {
+      "_id": "65265e10e9202900197d6013",
+      "username": "andreuserra",
+      "email": "andreuserra@malla.es",
+      "DOBLEFA": false
+    },
+    "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c3IiOiI1cEtLYmVZTG5vZmc3WTAyNEVXMiIsImVzdGFibGlzaG1lbnQiOiJOWDFERTNhNTRFZm9WcWtsYWFnOCIsImNvbXBhbmllcyI6IiIsInJvbGUiOiJ4S3hSclBkIiwiaXNMaW1pdGVkIjpmYWxzZSwiaWF0IjoxNzYyMjU1NDkxLCJleHAiOjE3NjIzNDE4OTF9.H8x4Z9jsf-BgQRVjUnU2HslLiUrzVmfcDvy0xEt_RbuAwCXjIzMqrdCt3Rb6Kzu-uy_fXUZNt2xqHiSPWXqx9Jxnmk6ZG1VvJZdCOVqHeIeMqqyyynBYiA0Y9VM8wDPT8rmpEaxUi6-y-yO5j7oTdSWXWkdLzavIGLrC7SgcqEc",
+    "token_expiry": "2025-11-05T12:24:51",
+    "login_timestamp": "2025-11-04T12:24:51.794198"
+  },
+  "last_login": "2025-11-04T12:24:51.794198",
+  "users_list": [],
+  "app_settings": {
+    "theme": "light",
+    "language": "es",
+    "notifications": true
+  },
+  "created_at": "2025-10-21T16:04:33.943703",
+  "last_modified": "2025-11-04T12:24:51.795404"
+}

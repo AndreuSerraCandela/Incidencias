@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#0066cc">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="Incidencias">
+    <meta name="msapplication-TileColor" content="#0066cc">
+    
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="/static/manifest.json">
+    
+    <!-- Iconos para diferentes dispositivos -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/icons/icon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/icons/icon-16x16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/icon-180x180.png">
+    <link rel="apple-touch-icon" sizes="152x152" href="/static/icons/icon-152x152.png">
+    <link rel="apple-touch-icon" sizes="144x144" href="/static/icons/icon-144x144.png">
+    <link rel="apple-touch-icon" sizes="120x120" href="/static/icons/icon-120x120.png">
+    <link rel="apple-touch-icon" sizes="114x114" href="/static/icons/icon-114x114.png">
+    <link rel="apple-touch-icon" sizes="76x76" href="/static/icons/icon-76x76.png">
+    <link rel="apple-touch-icon" sizes="72x72" href="/static/icons/icon-72x72.png">
+    <link rel="apple-touch-icon" sizes="60x60" href="/static/icons/icon-60x60.png">
+    <link rel="apple-touch-icon" sizes="57x57" href="/static/icons/icon-57x57.png">
+    
+    <title>App de Incidencias Paradas de Bus - Móvil</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+</head>
+<body>
+<div class="top-bar">
+  <div class="container top-bar-container">
+    <!-- Contacto: Teléfono y Correo -->
+    <div class="top-bar-links">
+      <span class="top-bar-phone">
+        <i class="fa fa-phone"></i>
+        <a href="tel:+34 971 00 28 00">+34 971 00 28 00</a>
+      </span>
+      <span class="top-bar-email">
+        <i class="fa fa-envelope"></i>
+        <a href="mailto:info@malla.es">info@malla.es</a>
+      </span>
+    </div>
+    <!-- Redes Sociales -->
+    <div class="social-icons">
+      <a href="https://www.linkedin.com/company/grupo-malla-publicidad/" target="_blank">
+        <i class="fa-brands fa-linkedin"></i>
+      </a>
+      <a href="https://instagram.com/grupomallapublicidad?igshid=YmMyMTA2M2Y=" target="_blank">
+        <i class="fa-brands fa-instagram"></i>
+      </a>          
+    </div>
+  </div>
+</div>
+
+    <div class="container">
+
+    
+        <!-- Header -->
+        <header class="header">
+            <h1 style="display:inline-flex; align-items:center; gap:0px;">
+                <img src="{{ url_for('static', filename='icons/icon-32x32.png') }}" 
+                     alt="icon" style="width:40px; height:40px;">
+                Incidencias Paradas de Bus
+            </h1>
+            <p class="subtitle">Reporta incidencias en paradas de bus con audio y fotos</p>
+            
+            <!-- Indicador de usuario -->
+            <div id="userIndicator" class="user-indicator" style="display: none;">
+                <i class="fas fa-user"></i>
+                <span id="currentUsername">Usuario</span>
+                <button id="logoutBtn" class="btn-logout">
+                    <i class="fas fa-sign-out-alt"></i>
+                </button>
+            </div>
+        </header>
+        
+        <!-- Modal de Login -->
+        <div id="loginModal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3><i class="fas fa-sign-in-alt"></i> Iniciar Sesión GTask</h3>
+                </div>
+                <div class="modal-body">
+                    <form id="loginForm" class="login-form">
+                        <div class="form-group">
+                            <label for="loginUsername">
+                                <i class="fas fa-user"></i> Usuario
+                            </label>
+                            <input type="text" id="loginUsername" name="username" 
+                                   required class="form-input">
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="loginPassword">
+                                <i class="fas fa-lock"></i> Contraseña
+                            </label>
+                            <input type="password" id="loginPassword" name="password" 
+                                    required class="form-input">
+                        </div>
+                        
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary">
+                                <i class="fas fa-sign-in-alt"></i> Iniciar Sesión
+                            </button>
+                        </div>
+                    </form>
+                    
+                    <div id="loginStatus" class="login-status" style="display: none;"></div>
+                </div>
+            </div>
+        </div>
+
+
+        <!-- Formulario principal -->
+        <div class="main-form">
+            <div class="form-group" style="display: none;">
+                <label for="taskId">
+                    <i class="fas fa-tasks"></i> ID de Tarea
+                </label>
+                <input type="text" id="taskId" placeholder="Ingresa el ID de la tarea" class="form-input">
+            </div>
+
+            <!-- Botón de Login -->
+            <div id="loginSection" class="login-section" style="display: none;">
+                <button id="loginBtn" class="btn-login">
+                    <i class="fas fa-sign-in-alt"></i> Iniciar Sesión GTask
+                </button>
+                <p class="login-info">
+                    <i class="fas fa-info-circle"></i> 
+                    Necesitas iniciar sesión para usar la aplicación
+                </p>
+            </div>
+            
+            <!-- Botones de acción -->
+            <div id="actionButtons" class="action-buttons" style="display: none;">
+                <button id="scanQRBtn" class="btn btn-primary">
+                    <i class="fas fa-qrcode"></i> Escanear QR
+                </button>
+                <button id="recordAudioBtn" class="btn btn-secondary">
+                    <i class="fas fa-microphone"></i> Grabar Audio
+                </button>
+                <button id="takePhotoBtn" class="btn btn-success">
+                    <i class="fas fa-camera"></i> Reportar Incidencia
+                </button>
+            </div>
+            
+            <!-- Imagen por defecto -->
+            <div class="default-image-container">
+                <img src="/static/icons/icon.png" alt="Imagen por defecto" class="default-img">
+            </div>
+        </div>
+
+        <!-- Resultados del QR -->
+        <div id="qrResults" class="results-section" style="display: none;">
+            <h3><i class="fas fa-check-circle"></i> Código QR Escaneado</h3>
+            <div class="qr-info">
+                <p><strong>Datos:</strong> <a id="qrData" href="#" target="_blank" style="color: #007bff; text-decoration: underline; cursor: pointer;"></a></p>
+                <p><strong>Tipo:</strong> <span id="qrType"></span></p>
+            </div>
+        </div>
+
+        <!-- Vista previa de la incidencia -->
+        <div id="photoPreview" class="photo-section" style="display: none;">
+            <h3><i class="fas fa-exclamation-triangle"></i> Vista Previa de la Incidencia</h3>
+            <div class="photo-container">
+                <img id="previewImage" src="" alt="Vista previa de la incidencia" class="preview-img">
+            </div>
+            <button id="sendIncidenceBtn" class="btn btn-warning">
+                <i class="fas fa-exclamation-triangle"></i> Enviar Incidencia
+            </button>
+            <p class="upload-info">
+                <i class="fas fa-info-circle"></i> 
+                La incidencia se enviará al sistema. Puedes seguir usando la aplicación.
+            </p>
+        </div>
+
+        <!-- Mensajes de estado -->
+        <div id="statusMessage" class="status-message" style="display: none;"></div>
+
+        <!-- Modal para escanear QR - FLUJO AUTOMÁTICO -->
+        <div id="qrModal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3><i class="fas fa-qrcode"></i> Escáner de QR Automático</h3>
+                    <button class="close-btn" id="closeQRModal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="camera-container">
+                        <video id="qrVideo" autoplay playsinline class="camera-video"></video>
+                        <canvas id="qrCanvas" style="display: none;"></canvas>
+                        
+                        <!-- Indicador de escaneo automático -->
+                        <div class="scan-indicator">
+                            <div class="scan-line"></div>
+                            <p class="scan-text">Escaneando automáticamente...</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Instrucciones para el usuario -->
+                    <div class="scan-instructions">
+                        <p><i class="fas fa-info-circle"></i> Apunta la cámara al código QR</p>
+                        <p><i class="fas fa-lightbulb"></i> Se detectará automáticamente</p>
+                    </div>
+                    
+                    <!-- Botones ocultos por defecto (solo para emergencias) -->
+                    <div class="camera-controls" style="display: none;">
+                        <button id="startCameraBtn" class="btn btn-primary">
+                            <i class="fas fa-play"></i> Iniciar Cámara
+                        </button>
+                        <button id="captureQRBtn" class="btn btn-success">
+                            <i class="fas fa-camera"></i> Capturar
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal para reportar incidencia -->
+        <div id="photoModal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3><i class="fas fa-camera"></i> Captura de Foto Automática</h3>
+                    <button class="close-btn" id="closePhotoModal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="camera-container">
+                        <video id="photoVideo" autoplay playsinline class="camera-video"></video>
+                        <canvas id="photoCanvas" style="display: none;"></canvas>
+                        
+                        <!-- Indicador de captura automática -->
+                        <div class="photo-indicator">
+                            <div class="photo-frame"></div>
+                            <p class="photo-text">Cámara lista para capturar</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Instrucciones para el usuario -->
+                    <div class="photo-instructions">
+                        <p><i class="fas fa-info-circle"></i> Encuadra la imagen que quieres fotografiar</p>
+                        <p><i class="fas fa-lightbulb"></i> Toca "Capturar Foto" cuando esté listo</p>
+                    </div>
+                    
+                    <!-- Controles de cámara de foto -->
+                    <div class="camera-controls">
+                        <button id="capturePhotoBtn" class="btn btn-success">
+                            <i class="fas fa-camera"></i> Capturar Foto
+                        </button>
+                        <button id="importPhotoBtn" class="btn btn-info">
+                            <i class="fas fa-upload"></i> Importar Foto
+                        </button>
+                        <input type="file" id="photoFileInput" accept="image/*" style="display: none;">
+                        <button id="retakePhotoBtn" class="btn btn-warning" style="display: none;">
+                            <i class="fas fa-redo"></i> Volver a Tomar
+                        </button>
+                    </div>
+                    
+                    <!-- Botones ocultos por defecto (solo para emergencias) -->
+                    <div class="emergency-controls" style="display: none;">
+                        <button id="startPhotoCameraBtn" class="btn btn-primary">
+                            <i class="fas fa-play"></i> Iniciar Cámara
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal de grabación de audio -->
+        <div id="audioModal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3><i class="fas fa-microphone"></i> Grabar Audio de Incidencia</h3>
+                    <button class="close-btn" id="closeAudioModal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="audio-recorder">
+                        <div class="recording-status">
+                            <div id="recordingIndicator" class="recording-indicator" style="display: none;">
+                                <i class="fas fa-circle"></i> Grabando...
+                            </div>
+                            <div id="audioDuration" class="audio-duration">00:00</div>
+                        </div>
+                        
+                        <div class="audio-controls">
+                            <button id="startRecordingBtn" class="btn btn-primary">
+                                <i class="fas fa-microphone"></i> Iniciar Grabación
+                            </button>
+                            <button id="stopRecordingBtn" class="btn btn-danger" style="display: none;">
+                                <i class="fas fa-stop"></i> Detener Grabación
+                            </button>
+                            <button id="playAudioBtn" class="btn btn-success" style="display: none;">
+                                <i class="fas fa-play"></i> Reproducir
+                            </button>
+                            <button id="deleteAudioBtn" class="btn btn-warning" style="display: none;">
+                                <i class="fas fa-trash"></i> Eliminar
+                            </button>
+                        </div>
+                        
+                        <div class="audio-preview" id="audioPreview" style="display: none;">
+                            <audio id="audioPlayer" controls style="width: 100%;"></audio>
+                        </div>
+                        
+                        <div class="audio-instructions">
+                            <p><i class="fas fa-info-circle"></i> <strong>Instrucciones:</strong></p>
+                            <p>• Menciona el número de parada (ej: "parada 625")</p>
+                            <p>• Describe la incidencia (ej: "cristal roto", "asiento dañado")</p>
+                            <p>• Ejemplo: "Parada 625, cristal roto"</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="useAudioBtn" class="btn btn-success" style="display: none;">
+                        <i class="fas fa-check"></i> Usar Audio
+                    </button>
+                    <button id="cancelAudioBtn" class="btn btn-secondary">
+                        <i class="fas fa-times"></i> Cancelar
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal para editar resultados de IA -->
+        <div id="aiResultsModal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3><i class="fas fa-robot"></i> Resultados de IA - Revisar y Corregir</h3>
+                    <button class="close-btn" id="closeAIResultsModal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="ai-results-container">
+                        <div class="ai-processing-status" id="aiProcessingStatus" style="display: none;">
+                            <div class="loading-spinner">
+                                <i class="fas fa-spinner fa-spin"></i>
+                            </div>
+                            <p>Procesando imagen con IA...</p>
+                        </div>
+                        
+                        <div class="ai-results-form" id="aiResultsForm" style="display: none;">
+                            <div class="form-group">
+                                <label for="aiStopNumber">
+                                    <i class="fas fa-map-marker-alt"></i> Número de Parada
+                                </label>
+                                <input type="text" id="aiStopNumber" class="form-input" placeholder="Ej: 625">
+                                <small class="form-help">El número de parada detectado por la IA (puedes corregirlo)</small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="aiDescription">
+                                    <i class="fas fa-file-alt"></i> Descripción de la Incidencia
+                                </label>
+                                <textarea id="aiDescription" class="form-textarea" rows="4" placeholder="Describe la incidencia..."></textarea>
+                                <small class="form-help">Descripción detectada por la IA (puedes corregirla)</small>
+                            </div>
+                            
+                            <div class="ai-raw-response" id="aiRawResponse" style="display: none;">
+                                <details>
+                                    <summary>Ver respuesta completa de la IA</summary>
+                                    <pre id="aiRawResponseText"></pre>
+                                </details>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button id="confirmAIResultsBtn" class="btn btn-success" style="display: none;">
+                        <i class="fas fa-check"></i> Confirmar y Enviar
+                    </button>
+                    <button id="cancelAIResultsBtn" class="btn btn-secondary">
+                        <i class="fas fa-times"></i> Cancelar
+                    </button>
+                </div>
+            </div>
+        </div>
+
+       <footer style="display:flex; flex-direction:column; align-items:center; position:relative;">
+    	 <div style="position:absolute; right:0; top:0;">
+          <a class="navbar-brand" href="http://malla.es">
+            <img src="{{ url_for('static', filename='icons/logomalla.png') }}" 
+                 alt="Grupo Malla" height="17" width="47">
+          </a>
+         </div>
+    	 <div class="copyright">
+        	<p>© 2025 Grupo Malla Publicidad</p>
+	 </div>
+	</footer>
+
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    
+    <!-- PWA Service Worker Registration -->
+    <script>
+        // Registrar Service Worker para PWA
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/static/sw.js')
+                    .then((registration) => {
+                        console.log('✅ Service Worker registrado:', registration.scope);
+                        
+                        // Verificar actualizaciones
+                        registration.addEventListener('updatefound', () => {
+                            const newWorker = registration.installing;
+                            newWorker.addEventListener('statechange', () => {
+                                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                                    // Nueva versión disponible
+                                    console.log('🆕 Nueva versión disponible');
+                                    showUpdateNotification();
+                                }
+                            });
+                        });
+                    })
+                    .catch((error) => {
+                        console.log('❌ Error al registrar Service Worker:', error);
+                    });
+            });
+        }
+        
+        // Mostrar notificación de actualización
+        function showUpdateNotification() {
+            if ('Notification' in window && Notification.permission === 'granted') {
+                new Notification('Incidencias Malla', {
+                    body: 'Nueva versión disponible. Recarga la página para actualizar.',
+                    icon: '/static/icons/icon-192x192.png',
+                    badge: '/static/icons/icon-72x72.png'
+                });
+            }
+        }
+        
+        // Solicitar permisos de notificación
+        function requestNotificationPermission() {
+            if ('Notification' in window && Notification.permission === 'default') {
+                Notification.requestPermission().then((permission) => {
+                    if (permission === 'granted') {
+                        console.log('✅ Permisos de notificación concedidos');
+                    }
+                });
+            }
+        }
+        
+        // Solicitar permisos al cargar la página
+        document.addEventListener('DOMContentLoaded', requestNotificationPermission);
+    </script>
+</body>
+</html>
+
