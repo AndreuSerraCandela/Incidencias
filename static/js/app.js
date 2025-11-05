@@ -309,14 +309,28 @@ async function startPhotoAutoCapture() {
     try {
         showStatus('Iniciando captura de foto automática...', 'info');
         
+        // Restablecer estado del modal
+        // Ocultar vista previa si existe
+        if (elements.photoPreview) {
+            elements.photoPreview.style.display = 'none';
+        }
+        // Ocultar botón de volver a tomar
+        if (elements.retakePhotoBtn) {
+            elements.retakePhotoBtn.style.display = 'none';
+        }
+        // Mostrar botones de captura e importar
+        if (elements.capturePhotoBtn) {
+            elements.capturePhotoBtn.style.display = 'inline-block';
+        }
+        if (elements.importPhotoBtn) {
+            elements.importPhotoBtn.style.display = 'inline-block';
+        }
+        
         // Abrir modal inmediatamente
         elements.photoModal.style.display = 'block';
         
         // Iniciar cámara automáticamente
         await startPhotoCamera();
-        
-        // Mostrar botón de captura automáticamente
-        elements.capturePhotoBtn.style.display = 'inline-block';
         
         showStatus('Cámara iniciada. Encuadra la imagen y toca "Capturar Foto".', 'success');
         
@@ -338,6 +352,24 @@ function closeQRModal() {
 function closePhotoModal() {
     stopPhotoCamera();
     elements.photoModal.style.display = 'none';
+    
+    // Restablecer estado del modal para la próxima vez
+    // Ocultar vista previa si existe
+    if (elements.photoPreview) {
+        elements.photoPreview.style.display = 'none';
+    }
+    // Ocultar botón de volver a tomar
+    if (elements.retakePhotoBtn) {
+        elements.retakePhotoBtn.style.display = 'none';
+    }
+    // Mostrar botones de captura e importar para la próxima vez
+    if (elements.capturePhotoBtn) {
+        elements.capturePhotoBtn.style.display = 'inline-block';
+    }
+    if (elements.importPhotoBtn) {
+        elements.importPhotoBtn.style.display = 'inline-block';
+    }
+    
     showStatus('Modal de captura de foto cerrado', 'info');
 }
 
@@ -754,28 +786,8 @@ async function uploadPhoto() {
             showStatus(`Incidencia enviada: Parada ${pendingIncidenceData.stopNumber} - ${pendingIncidenceData.description}`, 'success');
             console.log('✅ Incidencia enviada exitosamente:', result);
             
-            // Limpiar datos
-            currentPhotoData = null;
-            pendingIncidenceData = {
-                stopNumber: null,
-                description: null,
-                fullText: null,
-                hasAudio: false,
-                hasAI: false
-            };
-            
-            // Ocultar modal
-            elements.photoModal.style.display = 'none';
-            
-            // Limpiar preview
-            elements.previewImage.src = '';
-            elements.photoPreview.style.display = 'none';
-            
-            // Mostrar imagen por defecto nuevamente
-            const defaultImageContainer = document.querySelector('.default-image-container');
-            if (defaultImageContainer) {
-                defaultImageContainer.style.display = 'block';
-            }
+            // Limpiar completamente la pantalla
+            resetUIAfterIncidenceSent();
             
         } else {
             showStatus('Error al enviar incidencia: ' + result.error, 'error');
@@ -1017,25 +1029,8 @@ async function confirmAIResults() {
             showStatus(`Incidencia enviada: Parada ${stopNumber} - ${description}`, 'success');
             console.log('✅ Incidencia enviada exitosamente:', result);
             
-            // Limpiar datos
-            currentPhotoData = null;
-            pendingIncidenceData = {
-                stopNumber: null,
-                description: null,
-                fullText: null,
-                hasAudio: false,
-                hasAI: false
-            };
-            
-            // Limpiar preview
-            elements.previewImage.src = '';
-            elements.photoPreview.style.display = 'none';
-            
-            // Mostrar imagen por defecto nuevamente
-            const defaultImageContainer = document.querySelector('.default-image-container');
-            if (defaultImageContainer) {
-                defaultImageContainer.style.display = 'block';
-            }
+            // Limpiar completamente la pantalla
+            resetUIAfterIncidenceSent();
             
         } else {
             showStatus('Error al enviar incidencia: ' + result.error, 'error');
@@ -1763,10 +1758,14 @@ async function sendIncidenceFromPreview() {
         let description;
         if (hasAudioData && pendingIncidenceData.description) {
             // Pre-rellenar con la descripción del audio para que el usuario pueda modificarla
+            parada_bus=prompt('Ingresa el número de parada:',pendingIncidenceData.stopNumber);
+            pendingIncidenceData.stopNumber=parada_bus;
             description = prompt('Describe la incidencia:', pendingIncidenceData.description);
             console.log('🎤 Descripción del audio pre-rellenada:', pendingIncidenceData.description);
         } else if (hasAIData && pendingIncidenceData.description) {
             // Pre-rellenar con la descripción de la IA para que el usuario pueda modificarla
+            parada_bus=prompt('Ingresa el número de parada:',pendingIncidenceData.stopNumber);
+            pendingIncidenceData.stopNumber=parada_bus;
             description = prompt('Describe la incidencia:', pendingIncidenceData.description);
             console.log('🤖 Descripción de la IA pre-rellenada:', pendingIncidenceData.description);
         } else {
@@ -1822,6 +1821,10 @@ async function sendIncidenceFromPreview() {
         const data = await resp.json();
         if (data.success) {
             showStatus(`Incidencia enviada correctamente (Tipo: ${selectedType})`, 'success');
+            
+            // Limpiar completamente la pantalla
+            resetUIAfterIncidenceSent();
+            
         } else {
             showStatus('Error al enviar incidencia: ' + (data.error || 'Desconocido'), 'error');
         }
@@ -1902,6 +1905,80 @@ function stopPhotoCamera() {
     elements.photoVideo.srcObject = null;
     elements.capturePhotoBtn.style.display = 'none';
     elements.retakePhotoBtn.style.display = 'none';
+}
+
+// Función para limpiar completamente la pantalla después de enviar una incidencia
+function resetUIAfterIncidenceSent() {
+    console.log('🧹 Limpiando UI después de enviar incidencia...');
+    
+    // Limpiar datos globales
+    currentPhotoData = null;
+    currentQRData = null;
+    pendingIncidenceData = {
+        stopNumber: null,
+        description: null,
+        fullText: null,
+        hasAudio: false,
+        hasAI: false
+    };
+    
+    // Restablecer botones del modal de foto
+    if (elements.capturePhotoBtn) {
+        elements.capturePhotoBtn.style.display = 'inline-block';
+    }
+    if (elements.importPhotoBtn) {
+        elements.importPhotoBtn.style.display = 'inline-block';
+    }
+    if (elements.retakePhotoBtn) {
+        elements.retakePhotoBtn.style.display = 'none';
+    }
+    
+    // Cerrar modales
+    if (elements.photoModal) {
+        elements.photoModal.style.display = 'none';
+    }
+    if (elements.aiResultsModal) {
+        closeAIResultsModal();
+    }
+    if (elements.qrModal) {
+        elements.qrModal.style.display = 'none';
+    }
+    
+    // Limpiar vista previa de foto
+    if (elements.previewImage) {
+        elements.previewImage.src = '';
+    }
+    if (elements.photoPreview) {
+        elements.photoPreview.style.display = 'none';
+    }
+    
+    // Ocultar resultados de QR
+    if (elements.qrResults) {
+        elements.qrResults.style.display = 'none';
+    }
+    if (elements.qrData) {
+        elements.qrData.textContent = '';
+        elements.qrData.href = '#';
+    }
+    if (elements.qrType) {
+        elements.qrType.textContent = '';
+    }
+    
+    // Mostrar imagen por defecto nuevamente
+    const defaultImageContainer = document.querySelector('.default-image-container');
+    if (defaultImageContainer) {
+        defaultImageContainer.style.display = 'block';
+    }
+    
+    // Restablecer botón de reportar incidencia
+    updateReportButton();
+    
+    // Limpiar input de archivo si existe
+    if (elements.photoFileInput) {
+        elements.photoFileInput.value = '';
+    }
+    
+    console.log('✅ UI limpiada completamente');
 }
 
 // Manejar errores de cámara

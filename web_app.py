@@ -14,6 +14,7 @@ from datetime import datetime
 import uuid
 from threading import Thread
 import whisper
+import re
 
 # Importar configuración
 from config import *
@@ -1594,24 +1595,59 @@ def process_image_with_lm_studio(image_base64):
         if isinstance(image_base64, str) and image_base64.startswith('data:image'):
             image_base64 = image_base64.split(',')[1]
         
+        # Verificar tamaño de la imagen base64
+        base64_size_mb = len(image_base64) * 3 / 4 / 1024 / 1024  # Tamaño aproximado en MB
+        print(f"📸 Tamaño de imagen base64: {base64_size_mb:.2f} MB ({len(image_base64)} caracteres)")
+        
+        # Si la imagen es muy grande (>5MB), reducirla antes de enviar
+        if base64_size_mb > 5:
+            print(f"⚠️ Imagen muy grande ({base64_size_mb:.2f} MB), reduciendo tamaño...")
+            try:
+                from PIL import Image
+                import io
+                
+                # Decodificar base64 a bytes
+                image_bytes = base64.b64decode(image_base64)
+                
+                # Abrir imagen con PIL
+                img = Image.open(io.BytesIO(image_bytes))
+                
+                # Reducir tamaño si es muy grande (max 1024px en el lado más largo)
+                max_size = 1024
+                if img.width > max_size or img.height > max_size:
+                    img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                    print(f"✅ Imagen redimensionada a {img.width}x{img.height}")
+                
+                # Convertir de nuevo a base64 con calidad reducida
+                output = io.BytesIO()
+                img.save(output, format='JPEG', quality=85, optimize=True)
+                image_bytes = output.getvalue()
+                image_base64 = base64.b64encode(image_bytes).decode('utf-8')
+                
+                new_size_mb =image_base64# len(image_base64) * 3 / 4 / 1024 / 1024
+                print(f"✅ Imagen reducida a {new_size_mb:.2f} MB ({len(image_base64)} caracteres)")
+            except Exception as e:
+                print(f"⚠️ Error al reducir imagen: {e}, usando imagen original")
+        
         # URL de LM Studio (puerto por defecto)
         lm_studio_url = "http://localhost:1234/v1/chat/completions"
         
         # Prompt para Llava - Versión que FUNCIONÓ (según el usuario)
         # El modelo primero describe lo que ve y luego extrae la información
-        prompt = """Primero describe detalladamente todo lo que ves en esta imagen de parada de autobús. Luego busca específicamente:
+        prompt ='En esta parada de autobús, me puedes indicar el número de parada que empieza por la letra P seguida de números , busca en toda la imagen, no confundir con el numero de linea que está en un cartel del color de la linea , y la descripción de la incidencia o pintada que ves en la imagen?. Devuelve un json, con Numero de parada, descripción de la incidencia, pasos seguidos y conclusió'
+#         prompt = """Primero describe detalladamente todo lo que ves en esta imagen de parada de autobús. Luego busca específicamente:
 
-1. CUALQUIER número, código o texto que contenga la letra P seguida de números (P1171, P625, P123, etc.). Busca en TODA la imagen: carteles, señales, marcas, estructuras, cualquier lugar. Si encuentras un código con P, escríbelo EXACTAMENTE como aparece. Si después de buscar cuidadosamente no encuentras ningún código con P, usa null.
+# 1. CUALQUIER número, código o texto que contenga la letra P seguida de números (P1171, P625, P123, etc.). Busca en TODA la imagen: carteles, señales, marcas, estructuras, cualquier lugar. Si encuentras un código con P, escríbelo EXACTAMENTE como aparece. Si después de buscar cuidadosamente no encuentras ningún código con P, usa null.
 
-2. CUALQUIER incidencia visible: cristales rotos o dañados, marquesina estropeada, bancos rotos, grafitis, señales dañadas, estructura dañada, basura, cualquier daño visible.
+# 2. CUALQUIER incidencia visible: cristales rotos o dañados, marquesina estropeada, bancos rotos, grafitis, señales dañadas, estructura dañada, basura, cualquier daño visible.
 
-Después de describir lo que ves, responde SOLO con este formato JSON exacto:
-{
-  "stop_number": "P1171" o null,
-  "description": "descripción detallada en español"
-}
+# Después de describir lo que ves, responde SOLO con este formato JSON exacto:
+# {
+#   "stop_number": "P1171" o null,
+#   "description": "descripción detallada en español"
+# }
 
-CRÍTICO: Si ves CUALQUIER código que empiece con P y números, ESCRIBELO. No uses null si ves algo."""
+# CRÍTICO: Si ves CUALQUIER código que empiece con P y números, ESCRIBELO. No uses null si ves algo."""
         
         # Preparar el mensaje con imagen (formato multimodal)
         # Si el modelo soporta imágenes, las enviamos en el formato correcto
@@ -1650,22 +1686,45 @@ CRÍTICO: Si ves CUALQUIER código que empiece con P y números, ESCRIBELO. No u
         
         # Si el modelo no soporta imágenes, solo enviamos texto
         # (algunos modelos de LM Studio pueden no ser multimodales)
+        # Ajustes para Gemma 3 27B: modelo más grande requiere más tokens y tiempo
         payload = {
             "model": "local-model",  # LM Studio usa este nombre genérico
             "messages": messages,
-            "temperature": 0.3,  # Temperatura que funcionó según los logs
-            "max_tokens": 1000  # Tokens que funcionaron según los logs
+            "temperature": 0.2,  # Temperatura más baja para respuestas más consistentes con Gemma
+            "max_tokens": 2000  # Aumentar tokens para Gemma 3 27B (modelo más grande)
         }
         
         print(f"🤖 Enviando imagen a LM Studio en {lm_studio_url}...")
+        print(f"📊 Parámetros: temperature={payload['temperature']}, max_tokens={payload['max_tokens']}")
+        
+        # Verificar el tamaño del payload
+        import json as json_lib
+        payload_str = json_lib.dumps(payload)
+        payload_size_mb = len(payload_str.encode('utf-8')) / 1024 / 1024
+        print(f"📦 Tamaño del payload: {payload_size_mb:.2f} MB")
+        
+        # Verificar que la imagen esté en el payload
+        if 'image_url' in payload_str:
+            image_url_start = payload_str.find('data:image')
+            if image_url_start > 0:
+                print(f"✅ Imagen encontrada en payload (posición: {image_url_start})")
+                print(f"📸 Primeros 100 caracteres del data URL: {payload_str[image_url_start:image_url_start+100]}...")
         
         # Intentar con formato multimodal primero
         try:
+            print(f"🚀 Enviando petición a LM Studio (timeout: 100s)...")
+            import time
+            start_time = time.time()
+            
             response = requests.post(
                 lm_studio_url,
                 json=payload,
-                timeout=60  # Aumentar timeout para modelos grandes
+                timeout=100,  # Aumentar timeout a 250s para Gemma 3 27B (modelo más grande y lento)
+                headers={'Content-Type': 'application/json'}
             )
+            
+            elapsed_time = time.time() - start_time
+            print(f"⏱️ Tiempo transcurrido: {elapsed_time:.2f} segundos")
             
             print(f"📡 Respuesta del servidor (multimodal): status={response.status_code}")
             
@@ -1687,6 +1746,44 @@ CRÍTICO: Si ves CUALQUIER código que empiece con P y números, ESCRIBELO. No u
                 # Guardar el contenido original antes de modificarlo
                 original_content = content
                 
+                # Primero intentar extraer información útil (JSON o código de parada)
+                # Antes de determinar si es un error real
+                has_json = False
+                has_stop_number = False
+                
+                # Buscar rápidamente si hay JSON válido
+                json_quick_check = re.search(r'\{[^{}]*"stop_number"[^{}]*\}', content, re.DOTALL)
+                if json_quick_check:
+                    has_json = True
+                
+                # Buscar rápidamente si hay código de parada
+                stop_quick_check = re.search(r'\bP\s*\d{3,}\b', content, re.IGNORECASE)
+                if stop_quick_check:
+                    has_stop_number = True
+                
+                # Solo validar como error si NO hay información útil Y además contiene frases de error
+                if not has_json and not has_stop_number:
+                    error_messages = [
+                        "necesito una descripción de la imagen",
+                        "necesito una descripción",
+                        "no puedo ver la imagen",
+                        "no tengo acceso a la imagen",
+                        "la imagen no está disponible",
+                        "no puedo analizar la imagen",
+                        "proporciona la descripción",
+                        "esperaré tu texto",
+                        "sin información disponible"
+                    ]
+                    
+                    content_lower = content.lower()
+                    if any(error_msg in content_lower for error_msg in error_messages):
+                        print(f"❌ El modelo indicó que no puede procesar la imagen y no hay información útil")
+                        print(f"❌ Respuesta: {content[:200]}...")
+                        return {
+                            'success': False,
+                            'error': 'El modelo Gemma 3 27B no es multimodal (no soporta imágenes directamente).\n\nOpciones:\n1. Usa un modelo multimodal como Llava (ej: llava1.6-mistral-7b-instruct)\n2. O usa un modelo de visión como Gemma 2B-IT o Qwen2-VL\n\nEl modelo actual solo puede procesar texto, no imágenes.'
+                        }
+                
                 # Buscar cualquier código con P en la respuesta completa ANTES de extraer JSON
                 # Esto puede ayudar a encontrar códigos que el modelo menciona pero no pone en el JSON
                 p_code_in_full_text = re.search(r'\bP\s*(\d{3,})\b', original_content, re.IGNORECASE)
@@ -1697,42 +1794,118 @@ CRÍTICO: Si ves CUALQUIER código que empiece con P y números, ESCRIBELO. No u
                 
                 # Limpiar el contenido: remover bloques de código markdown si existen
                 # Buscar JSON dentro de bloques ```json ... ``` o ``` ... ```
-                code_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+                # Usar un patrón más robusto que maneje JSON multilínea y truncado
+                code_block_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?)\s*```', content, re.DOTALL)
                 if code_block_match:
-                    content = code_block_match.group(1)
-                    print(f"✅ JSON extraído de bloque de código markdown: {content[:200]}...")
+                    extracted_json = code_block_match.group(1)
+                    print(f"✅ JSON extraído de bloque de código markdown (primeros 300 chars): {extracted_json[:300]}...")
+                    content = extracted_json
                 
-                # Intentar extraer JSON de la respuesta (patrón más flexible)
-                # Buscar cualquier JSON que contenga stop_number o description
-                json_match = re.search(r'\{[^{}]*(?:"stop_number"[^{}]*"description"|"description"[^{}]*"stop_number")[^{}]*\}', content, re.DOTALL)
-                
-                if not json_match:
-                    # Intentar un patrón más simple: cualquier bloque JSON
-                    json_match = re.search(r'\{[^{}]*"stop_number"[^{}]*\}', content, re.DOTALL)
+                # Intentar extraer JSON de la respuesta (patrones más flexibles)
+                # Primero intentar con JSON completo que contenga ambos campos
+                json_match = re.search(r'\{[\s\S]*?"stop_number"[\s\S]*?"description"[\s\S]*?\}', content, re.DOTALL)
                 
                 if not json_match:
-                    # Intentar encontrar cualquier JSON
-                    json_match = re.search(r'\{[^{}]*"description"[^{}]*\}', content, re.DOTALL)
+                    # Intentar encontrar JSON que empiece con stop_number (puede estar truncado)
+                    json_match = re.search(r'\{[\s\S]*?"stop_number"[\s\S]*?\}', content, re.DOTALL)
                 
                 if not json_match:
-                    # Intentar encontrar cualquier JSON válido (más flexible)
-                    json_match = re.search(r'\{[^}]*"stop_number"[^}]*\}', content, re.DOTALL)
-                
-                if not json_match:
-                    # Último intento: buscar cualquier objeto JSON
-                    json_match = re.search(r'\{.*?"stop_number".*?"description".*?\}', content, re.DOTALL)
+                    # Intentar encontrar cualquier JSON que empiece con {
+                    json_match = re.search(r'\{[\s\S]*?"stop_number"', content, re.DOTALL)
+                    if json_match:
+                        # El JSON está truncado, intentar extraerlo completo hasta donde termine
+                        json_start_pos = json_match.start()
+                        # Buscar hasta el final del contenido o hasta encontrar un cierre válido
+                        json_candidate = content[json_start_pos:]
+                        # Intentar encontrar stop_number y description aunque esté truncado
+                        json_match = re.search(r'\{[\s\S]*?"stop_number"[\s\S]*?"description"[\s\S]*?[^"]"', json_candidate, re.DOTALL)
+                        if not json_match:
+                            # Si no encuentra description completo, tomar hasta donde esté
+                            json_match = re.search(r'\{[\s\S]*?"stop_number"[\s\S]*?"description"[\s\S]*', json_candidate, re.DOTALL)
                 
                 if json_match:
-                    print(f"✅ JSON encontrado: {json_match.group(0)}")
+                    json_str = json_match.group(0)
+                    print(f"✅ JSON encontrado (longitud: {len(json_str)} chars): {json_str[:500]}...")
                     import json as json_lib
+                    ai_data = None
                     try:
-                        ai_data = json_lib.loads(json_match.group(0))
-                        stop_num = ai_data.get('stop_number')
-                        desc = ai_data.get('description', '')
+                        # Intentar parsear el JSON
+                        ai_data = json_lib.loads(json_str)
+                        print(f"✅ JSON parseado correctamente")
+                    except json_lib.JSONDecodeError as e:
+                        print(f"⚠️ Error parseando JSON completo: {e}")
+                        print(f"⚠️ JSON problemático (puede estar truncado): {json_str}")
+                        # Si el JSON está truncado, intentar extraer campos manualmente
+                        print("🔄 Intentando extraer campos manualmente del JSON truncado...")
+                        # Extraer stop_number - puede estar truncado, así que buscar hasta el final
+                        # Buscar con diferentes nombres posibles (inglés y español)
+                        stop_num_match = re.search(r'"(?:stop_number|Numero de parada|numero de parada|Número de parada)"\s*:\s*"([^"]+)"', json_str, re.IGNORECASE)
+                        # Para description, buscar hasta el final del string (puede estar truncado)
+                        # Buscar con diferentes nombres posibles (inglés y español)
+                        desc_match = re.search(r'"(?:description|descripci[oó]n de la incidencia|descripcion de la incidencia|descripci[oó]n)"\s*:\s*"([^"]*)"', json_str, re.IGNORECASE)
+                        if not desc_match:
+                            # Si no encuentra comilla de cierre, buscar hasta el final del string (truncado)
+                            desc_match = re.search(r'"(?:description|descripci[oó]n de la incidencia|descripcion de la incidencia|descripci[oó]n)"\s*:\s*"([^"]*)', json_str, re.IGNORECASE)
+                        
+                        if stop_num_match or desc_match:
+                            # Crear un objeto parcial con los campos encontrados
+                            ai_data = {}
+                            if stop_num_match:
+                                ai_data['stop_number'] = stop_num_match.group(1)
+                            if desc_match:
+                                ai_data['description'] = desc_match.group(1)
+                            print(f"✅ Campos extraídos manualmente: {ai_data}")
+                        else:
+                            print(f"❌ No se pudieron extraer campos del JSON truncado")
+                            # Continuar con el flujo normal para extraer del texto
+                            ai_data = None
+                    
+                    if ai_data:
+                        # Buscar número de parada con diferentes nombres posibles
+                        stop_num = (ai_data.get('stop_number') or 
+                                   ai_data.get('Numero de parada') or 
+                                   ai_data.get('numero de parada') or 
+                                   ai_data.get('Número de parada'))
+                        
+                        # Buscar descripción de la incidencia con diferentes nombres posibles
+                        # Priorizar "descripción de la incidencia" para evitar confundir con otros campos
+                        desc = None
+                        if isinstance(ai_data, dict):
+                            # Buscar específicamente el campo de descripción de la incidencia
+                            for key in ai_data.keys():
+                                if key.lower() in ['descripción de la incidencia', 'descripcion de la incidencia']:
+                                    desc = ai_data[key]
+                                    break
+                            
+                            # Si no se encontró, buscar con otros nombres
+                            if not desc:
+                                desc = (ai_data.get('description') or 
+                                       ai_data.get('descripción') or 
+                                       ai_data.get('descripcion') or 
+                                       '')
+                        
+                        # Validar que la descripción no sea el JSON completo
+                        if desc and isinstance(desc, str):
+                            # Si la descripción contiene estructuras JSON o parece ser el JSON completo, limpiarla
+                            if desc.strip().startswith('{') or '"pasos seguidos"' in desc or '"conclusión"' in desc or '"conclusion"' in desc:
+                                print("⚠️ La descripción parece contener JSON completo, extrayendo solo el campo...")
+                                # Intentar extraer solo el valor del campo "descripción de la incidencia"
+                                desc_match = re.search(r'"(?:descripción de la incidencia|descripcion de la incidencia|description)"\s*:\s*"([^"]+)"', desc, re.IGNORECASE)
+                                if desc_match:
+                                    desc = desc_match.group(1)
+                                else:
+                                    # Si no se puede extraer, usar el valor del JSON parseado directamente
+                                    desc = (ai_data.get('descripción de la incidencia') or 
+                                           ai_data.get('descripcion de la incidencia') or 
+                                           '')
+                        
+                        # Asegurar que desc es un string válido
+                        if not desc or not isinstance(desc, str):
+                            desc = ''
                         
                         print(f"📋 Datos extraídos del JSON:")
                         print(f"  - stop_number: {stop_num}")
-                        print(f"  - description: {desc}")
+                        print(f"  - description: {desc[:100] if desc else 'vacía'}...")
                         
                         # Si stop_number es null, "null" (string), o None, buscar manualmente en TODO el texto
                         if not stop_num or stop_num == 'null' or stop_num == 'None' or stop_num == 'null' or (isinstance(stop_num, str) and stop_num.lower().strip() == 'null'):
@@ -1771,23 +1944,21 @@ CRÍTICO: Si ves CUALQUIER código que empiece con P y números, ESCRIBELO. No u
                         # Si description es literal "texto en español" o está vacía, buscar en el texto
                         if not desc or desc == 'null' or desc == 'None' or desc.strip() == '' or desc.lower().strip() == 'texto en español':
                             print("⚠️ description es inválida o literal, buscando en el texto...")
-                            # Buscar descripción en el texto
-                            desc_match = re.search(r'"description"\s*:\s*"([^"]+)"', content, re.IGNORECASE)
+                            # Buscar descripción de la incidencia en el texto (priorizar campo en español)
+                            desc_match = re.search(r'"(?:descripción de la incidencia|descripcion de la incidencia|description)"\s*:\s*"([^"]+)"', content, re.IGNORECASE)
                             if desc_match:
                                 desc = desc_match.group(1)
                                 # Si es el texto literal "texto en español", buscar en el contenido
                                 if desc.lower().strip() == 'texto en español':
                                     desc = "Sin incidencia visible"
                             else:
-                                # Extraer descripción del texto completo
-                                desc_text = content
-                                if stop_num:
-                                    desc_text = re.sub(rf'{re.escape(str(stop_num))}', '', desc_text, flags=re.IGNORECASE)
-                                    desc_text = re.sub(r'"stop_number"\s*:\s*"[^"]*"', '', desc_text, flags=re.IGNORECASE)
-                                desc_text = re.sub(r'\{[^{}]*\}', '', desc_text)  # Remover JSON
-                                desc_text = desc_text.strip()
-                                if desc_text and len(desc_text) > 10 and desc_text.lower() != 'texto en español':
-                                    desc = desc_text[:200]  # Limitar longitud
+                                # Buscar descripción en JSON multilínea (puede tener saltos de línea)
+                                desc_match = re.search(r'"(?:descripción de la incidencia|descripcion de la incidencia|description)"\s*:\s*"([^"]*)"', content, re.IGNORECASE | re.DOTALL)
+                                if desc_match:
+                                    desc = desc_match.group(1).strip()
+                                    # Limpiar saltos de línea múltiples
+                                    desc = re.sub(r'\n+', ' ', desc)
+                                    desc = re.sub(r'\s+', ' ', desc).strip()
                                 else:
                                     desc = "Sin incidencia visible"
                         
@@ -1808,55 +1979,106 @@ CRÍTICO: Si ves CUALQUIER código que empiece con P y números, ESCRIBELO. No u
                             'description': desc,
                             'raw_response': content
                         }
-                    except json_lib.JSONDecodeError:
-                        print("⚠️ Error al parsear JSON, intentando extracción manual...")
-                        # Continuar con extracción manual
                 
                 # Si no hay JSON, intentar extraer información con regex
                 print("⚠️ No se encontró JSON válido, intentando extracción manual del texto...")
                 stop_number = None
-                description = content
+                description = None
                 
-                # Buscar número de parada en el texto (puede incluir letras como P1171)
-                print(f"🔍 Buscando número de parada en: {content[:200]}...")
-                stop_match = re.search(r'"stop_number"\s*:\s*"?([A-Z]?\d+)"?', content, re.IGNORECASE)
-                if stop_match:
-                    stop_number = stop_match.group(1).strip()
-                    # Limpiar espacios si hay
-                    stop_number = stop_number.replace(' ', '')
-                    print(f"✅ Número de parada encontrado en JSON: {stop_number}")
-                else:
-                    # Intentar buscar directamente en el texto usando extract_stop_info
-                    print("🔍 Buscando con extract_stop_info...")
-                    stop_info = extract_stop_info(content)
-                    stop_number = stop_info.get('stop_number')
-                    if stop_number:
-                        print(f"✅ Número de parada encontrado: {stop_number}")
+                # Buscar formato estructurado con títulos markdown
+                # Buscar "**Número de parada:**" seguido del número
+                stop_section = re.search(r'\*\*Número de parada:\*\*\s*\n?\s*\*\*?([P]?\d+)\*\*?', content, re.IGNORECASE | re.MULTILINE)
+                if stop_section:
+                    stop_number = stop_section.group(1).strip()
+                    # Asegurar que empieza con P si no lo tiene
+                    if not stop_number.upper().startswith('P'):
+                        stop_number = f"P{stop_number}"
+                    print(f"✅ Número de parada encontrado en sección markdown: {stop_number}")
+                
+                # Buscar "**Descripción de la incidencia o pintada:**" seguido de la descripción
+                desc_section = re.search(
+                    r'\*\*Descripción de la incidencia o pintada:\*\*\s*\n?\s*(.+?)(?=\*\*|Nota adicional|$)', 
+                    content, 
+                    re.IGNORECASE | re.MULTILINE | re.DOTALL
+                )
+                if desc_section:
+                    description = desc_section.group(1).strip()
+                    # Limpiar saltos de línea múltiples y espacios extra
+                    description = re.sub(r'\n+', ' ', description)
+                    description = re.sub(r'\s+', ' ', description).strip()
+                    print(f"✅ Descripción encontrada en sección markdown: {description[:100]}...")
+                
+                # Si no se encontró con el formato estructurado, buscar con los métodos anteriores
+                if not stop_number:
+                    # Buscar número de parada en el texto (puede incluir letras como P1171)
+                    print(f"🔍 Buscando número de parada en: {content[:200]}...")
+                    stop_match = re.search(r'"stop_number"\s*:\s*"?([A-Z]?\d+)"?', content, re.IGNORECASE)
+                    if stop_match:
+                        stop_number = stop_match.group(1).strip()
+                        # Limpiar espacios si hay
+                        stop_number = stop_number.replace(' ', '')
+                        print(f"✅ Número de parada encontrado en JSON: {stop_number}")
                     else:
-                        print("⚠️ No se encontró número de parada")
-                
-                # Buscar descripción
-                desc_match = re.search(r'"description"\s*:\s*"([^"]+)"', content, re.IGNORECASE)
-                if desc_match:
-                    description = desc_match.group(1)
-                    print(f"✅ Descripción encontrada en JSON: {description}")
-                else:
-                    # Si no se encuentra en JSON, usar la extracción del texto
-                    if not stop_number:
+                        # Intentar buscar directamente en el texto usando extract_stop_info
+                        print("🔍 Buscando con extract_stop_info...")
                         stop_info = extract_stop_info(content)
-                        description = stop_info.get('description', content)
-                        print(f"✅ Descripción extraída del texto: {description}")
-                    else:
-                        # Buscar descripción en el texto sin el número de parada
-                        # Remover el número de parada del texto para obtener la descripción
-                        desc_text = content
+                        stop_number = stop_info.get('stop_number')
                         if stop_number:
-                            desc_text = re.sub(rf'{re.escape(stop_number)}', '', desc_text, flags=re.IGNORECASE)
-                            desc_text = re.sub(r'"stop_number"\s*:\s*"[^"]*"', '', desc_text, flags=re.IGNORECASE)
-                        description = desc_text.strip()
-                        if not description or len(description) < 5:
-                            description = "Incidencia detectada por IA"
-                        print(f"✅ Descripción obtenida: {description}")
+                            print(f"✅ Número de parada encontrado: {stop_number}")
+                        else:
+                            print("⚠️ No se encontró número de parada")
+                
+                # Si no se encontró descripción con el formato estructurado, buscar con métodos anteriores
+                if not description:
+                    # Buscar descripción de la incidencia en el JSON (priorizar campo en español)
+                    desc_match = re.search(r'"(?:descripción de la incidencia|descripcion de la incidencia|description)"\s*:\s*"([^"]+)"', content, re.IGNORECASE)
+                    if desc_match:
+                        description = desc_match.group(1)
+                        print(f"✅ Descripción encontrada en JSON: {description}")
+                    else:
+                        # Buscar descripción en JSON multilínea (puede tener saltos de línea)
+                        desc_match = re.search(r'"(?:descripción de la incidencia|descripcion de la incidencia|description)"\s*:\s*"([^"]*)"', content, re.IGNORECASE | re.DOTALL)
+                        if desc_match:
+                            description = desc_match.group(1).strip()
+                            # Limpiar saltos de línea múltiples
+                            description = re.sub(r'\n+', ' ', description)
+                            description = re.sub(r'\s+', ' ', description).strip()
+                            print(f"✅ Descripción encontrada en JSON multilínea: {description}")
+                        else:
+                            # Si no se encuentra en JSON, usar la extracción del texto
+                            if not stop_number:
+                                stop_info = extract_stop_info(content)
+                                description = stop_info.get('description', content)
+                                print(f"✅ Descripción extraída del texto: {description}")
+                            else:
+                                # Buscar descripción en el texto sin el número de parada
+                                # Remover el número de parada del texto para obtener la descripción
+                                desc_text = content
+                                if stop_number:
+                                    desc_text = re.sub(rf'{re.escape(stop_number)}', '', desc_text, flags=re.IGNORECASE)
+                                    desc_text = re.sub(r'"(?:Numero de parada|numero de parada|stop_number)"\s*:\s*"[^"]*"', '', desc_text, flags=re.IGNORECASE)
+                                # Remover secciones de notas adicionales y campos JSON no deseados
+                                desc_text = re.sub(r'\*\*Nota adicional:\*\*.*', '', desc_text, flags=re.IGNORECASE | re.DOTALL)
+                                desc_text = re.sub(r'Nota adicional.*', '', desc_text, flags=re.IGNORECASE | re.DOTALL)
+                                # Remover campos JSON que no queremos (pasos seguidos, conclusión)
+                                desc_text = re.sub(r'"(?:pasos seguidos|conclusi[oó]n)"\s*:\s*\[?[^\]]*\]?', '', desc_text, flags=re.IGNORECASE | re.DOTALL)
+                                description = desc_text.strip()
+                                if not description or len(description) < 5:
+                                    description = "Incidencia detectada por IA"
+                                print(f"✅ Descripción obtenida: {description}")
+                
+                # Limpiar la descripción de cualquier nota adicional que pueda quedar
+                if description:
+                    # Remover cualquier nota adicional que pueda estar al final
+                    description = re.sub(r'Nota adicional:.*', '', description, flags=re.IGNORECASE | re.DOTALL)
+                    description = re.sub(r'\*\*Nota adicional:\*\*.*', '', description, flags=re.IGNORECASE | re.DOTALL)
+                    description = re.sub(r'El número.*que ves.*es.*número de línea.*', '', description, flags=re.IGNORECASE)
+                    # Remover campos JSON no deseados si aún están presentes
+                    description = re.sub(r'"(?:pasos seguidos|conclusi[oó]n)"\s*:\s*\[?[^\]]*\]?', '', description, flags=re.IGNORECASE | re.DOTALL)
+                    description = re.sub(r'"(?:Numero de parada|numero de parada|stop_number)"\s*:\s*"[^"]*"', '', description, flags=re.IGNORECASE)
+                    # Remover cualquier estructura JSON completa si está en la descripción
+                    description = re.sub(r'\{[^{}]*"descripción de la incidencia"[^{}]*\}', '', description, flags=re.IGNORECASE | re.DOTALL)
+                    description = description.strip()
                 
                 # Asegurar que siempre tenemos valores válidos
                 if not stop_number:
@@ -1885,132 +2107,24 @@ CRÍTICO: Si ves CUALQUIER código que empiece con P y números, ESCRIBELO. No u
                 }
             else:
                 print(f"⚠️ LM Studio respondió con código {response.status_code}: {response.text}")
-                # Intentar sin formato multimodal
-                raise Exception("Formato multimodal no soportado")
+                return {
+                    'success': False,
+                    'error': f'LM Studio respondió con código {response.status_code}: {response.text}'
+                }
                 
-        except Exception as e:
-            print(f"⚠️ Error con formato multimodal, intentando sin imagen: {e}")
-            print(f"⚠️ Detalles del error: {type(e).__name__}: {str(e)}")
-            
-            # Si falla, intentar sin imagen (solo texto)
-            # Esto funcionará si el modelo no es multimodal pero puede analizar descripciones
-            print("🔄 Intentando con formato de solo texto (sin imagen)...")
-            # Para modelos de solo texto, usar un prompt más simple
-            text_prompt = """Necesito analizar una imagen de parada de autobús pero no puedo verla directamente. 
-
-Basándote en la descripción que puedas obtener, busca:
-1. Un código que empieza con "P" seguido de números (ej: P1171, P625)
-2. Incidencias: cristales rotos, marquesina estropeada, bancos rotos, grafitis, señales dañadas, estructura dañada, basura
-
-Responde SOLO en formato JSON:
-{"stop_number": "P1171" o null, "description": "texto en español"}
-
-Ejemplo: {"stop_number": "P1171", "description": "cristales rotos"}
-Ejemplo sin parada: {"stop_number": null, "description": "Sin incidencia visible"}"""
-            
-            # Llava solo soporta roles "user" y "assistant", no "system"
-            # Incluir las instrucciones del sistema en el prompt del usuario
-            text_prompt_with_system = """Eres un analizador de imágenes. Responde SOLO en formato JSON con stop_number y description.
-
-""" + text_prompt
-            
-            payload_text = {
-                "model": "local-model",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": text_prompt_with_system
-                    }
-                ],
-                "temperature": 0.0,
-                "max_tokens": 500
+        except requests.exceptions.Timeout:
+            return {
+                'success': False,
+                'error': 'El modelo tardó demasiado en responder (timeout). Puede que el modelo sea muy grande o esté procesando. Intenta con un modelo más pequeño o espera más tiempo.'
             }
-            
-            try:
-                response = requests.post(
-                    lm_studio_url,
-                    json=payload_text,
-                    timeout=60  # Aumentar timeout para modelos grandes
-                )
-                
-                print(f"📡 Respuesta del servidor (solo texto): status={response.status_code}")
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    print(f"📋 Resultado completo: {result}")
-                    content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
-                    
-                    if not content:
-                        print("⚠️ La respuesta del modelo está vacía")
-                        return {
-                            'success': False,
-                            'error': 'El modelo no generó una respuesta. Asegúrate de que el modelo esté cargado y sea compatible.'
-                        }
-                    
-                    print(f"🤖 Respuesta del modelo (solo texto): {content}")
-                    
-                    # Intentar extraer JSON primero
-                    json_match = re.search(r'\{[^{}]*"stop_number"[^{}]*"description"[^{}]*\}', content, re.DOTALL)
-                    if not json_match:
-                        json_match = re.search(r'\{[^{}]*\}', content, re.DOTALL)
-                    
-                    if json_match:
-                        import json as json_lib
-                        try:
-                            ai_data = json_lib.loads(json_match.group(0))
-                            stop_num = ai_data.get('stop_number')
-                            desc = ai_data.get('description', 'Sin incidencia visible')
-                            
-                            # Si stop_number es null, buscar en el texto
-                            if not stop_num or stop_num == 'null' or stop_num == 'None':
-                                stop_info = extract_stop_info(content)
-                                stop_num = stop_info.get('stop_number')
-                            
-                            print(f"📤 Resultado final (solo texto con JSON):")
-                            print(f"  - stop_number: {stop_num}")
-                            print(f"  - description: {desc}")
-                            
-                            return {
-                                'success': True,
-                                'stop_number': stop_num if stop_num and stop_num != 'null' else None,
-                                'description': desc if desc else 'Sin incidencia visible',
-                                'raw_response': content
-                            }
-                        except Exception as e:
-                            print(f"⚠️ Error parseando JSON: {e}")
-                    
-                    # Si no hay JSON, extraer información del texto
-                    print("⚠️ No se encontró JSON, extrayendo del texto...")
-                    stop_info = extract_stop_info(content)
-                    
-                    print(f"📤 Resultado final (solo texto sin JSON):")
-                    print(f"  - stop_number: {stop_info.get('stop_number')}")
-                    print(f"  - description: {stop_info.get('description')}")
-                    
-                    return {
-                        'success': True,
-                        'stop_number': stop_info.get('stop_number') if stop_info.get('stop_number') else None,
-                        'description': stop_info.get('description') if stop_info.get('description') else 'Sin incidencia visible',
-                        'raw_response': content
-                    }
-                else:
-                    print(f"❌ Error en respuesta solo texto: {response.status_code}")
-                    print(f"❌ Respuesta: {response.text}")
-                    return {
-                        'success': False,
-                        'error': f'LM Studio respondió con código {response.status_code}: {response.text}'
-                    }
-            except requests.exceptions.Timeout:
-                return {
-                    'success': False,
-                    'error': 'El modelo tardó demasiado en responder. Puede que el modelo sea muy grande o esté procesando. Intenta con un modelo más pequeño o espera más tiempo.'
-                }
-            except Exception as e2:
-                print(f"❌ Error en intento solo texto: {type(e2).__name__}: {str(e2)}")
-                return {
-                    'success': False,
-                    'error': f'Error al procesar con modelo solo texto: {str(e2)}'
-                }
+        except Exception as e:
+            print(f"❌ Error procesando imagen con formato multimodal: {type(e).__name__}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {
+                'success': False,
+                'error': f'Error al procesar imagen con el modelo: {str(e)}'
+            }
         
     except requests.exceptions.ConnectionError:
         error_msg = 'No se puede conectar a LM Studio. Asegúrate de que:\n1. LM Studio esté corriendo\n2. El servidor local esté activo en http://localhost:1234\n3. Ve a la pestaña "Developer" en LM Studio y asegúrate de que el servidor esté iniciado'

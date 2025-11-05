@@ -6,11 +6,11 @@
       "email": "andreuserra@malla.es",
       "DOBLEFA": false
     },
-    "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c3IiOiI1cEtLYmVZTG5vZmc3WTAyNEVXMiIsImVzdGFibGlzaG1lbnQiOiJOWDFERTNhNTRFZm9WcWtsYWFnOCIsImNvbXBhbmllcyI6IiIsInJvbGUiOiJ4S3hSclBkIiwiaXNMaW1pdGVkIjpmYWxzZSwiaWF0IjoxNzYyMjY0MTU2LCJleHAiOjE3NjIzNTA1NTZ9.I28_cFz-SITq4u-U3pwT_1dBhRkKUNWYCL8KCdbZJWyiLgo49W9dxelrmembCVFGPo3swv5XlFm4MzvEpknQZlMWfj7omkRDq6U3zRNtvN5uZ4N8ZpDl8Z4O7oVt-YqHHvv1jr4SlHqAj1vVT0h3NJI7krE2VQ1zti7D59zzBPg",
-    "token_expiry": "2025-11-05T14:49:16",
-    "login_timestamp": "2025-11-04T14:49:16.590429"
+    "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c3IiOiI1cEtLYmVZTG5vZmc3WTAyNEVXMiIsImVzdGFibGlzaG1lbnQiOiJOWDFERTNhNTRFZm9WcWtsYWFnOCIsImNvbXBhbmllcyI6IiIsInJvbGUiOiJ4S3hSclBkIiwiaXNMaW1pdGVkIjpmYWxzZSwiaWF0IjoxNzYyMzM3MTg3LCJleHAiOjE3NjI0MjM1ODd9.VjNQkbMBbykow2f9bGXZkjP-iy-NsARE1BRJGmZmGAqsdWNK-cNGLXrUhan1CfFSwiiRTDlJUal-j2AAki7-iyoX8Rtww6HiufJjqBMB0Obw2meGMIpbYXDzXlFvIFRe-A8oPE-XagedlvGz5cTzYWUfq1xOCS4KY1hPedjn180",
+    "token_expiry": "2025-11-06T11:06:27",
+    "login_timestamp": "2025-11-05T11:06:27.864024"
   },
-  "last_login": "2025-11-04T14:49:16.590429",
+  "last_login": "2025-11-05T11:06:27.864024",
   "users_list": [],
   "app_settings": {
     "theme": "light",
@@ -18,5 +18,5 @@
     "notifications": true
   },
   "created_at": "2025-11-04T11:49:52.668745",
-  "last_modified": "2025-11-04T14:49:16.590429"
+  "last_modified": "2025-11-05T11:06:27.864024"
 }
