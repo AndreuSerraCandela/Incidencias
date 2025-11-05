@@ -1599,7 +1599,7 @@ def extract_stop_info(text):
 def process_image_with_lm_studio(image_base64):
     """
     Procesa imagen con LM Studio para extraer número de parada e incidencia
-    LM Studio debe estar corriendo en http://localhost:1234
+    LM Studio debe estar corriendo en http://192.168.10.253:1234
     """
     try:
         import re
@@ -1643,7 +1643,7 @@ def process_image_with_lm_studio(image_base64):
                 print(f"⚠️ Error al reducir imagen: {e}, usando imagen original")
         
         # URL de LM Studio (puerto por defecto)
-        lm_studio_url = "http://localhost:1234/v1/chat/completions"
+        lm_studio_url = "http://192.168.10.253:1234/v1/chat/completions"
         
         # Prompt para Llava - Versión que FUNCIONÓ (según el usuario)
         # El modelo primero describe lo que ve y luego extrae la información
@@ -2116,7 +2116,7 @@ def process_image_with_lm_studio(image_base64):
                 print(f"❌ LM Studio error 404: {error_msg}")
                 return {
                     'success': False,
-                    'error': f'LM Studio no tiene un modelo cargado. Por favor:\n1. Abre LM Studio\n2. Ve a la pestaña "Developer"\n3. Carga un modelo (preferiblemente multimodal para visión)\n4. Asegúrate de que el servidor esté corriendo en http://localhost:1234\n\nError: {error_msg}'
+                    'error': f'LM Studio no tiene un modelo cargado. Por favor:\n1. Abre LM Studio\n2. Ve a la pestaña "Developer"\n3. Carga un modelo (preferiblemente multimodal para visión)\n4. Asegúrate de que el servidor esté corriendo en http://192.168.10.253:1234\n\nError: {error_msg}'
                 }
             else:
                 print(f"⚠️ LM Studio respondió con código {response.status_code}: {response.text}")
@@ -2140,7 +2140,7 @@ def process_image_with_lm_studio(image_base64):
             }
         
     except requests.exceptions.ConnectionError:
-        error_msg = 'No se puede conectar a LM Studio. Asegúrate de que:\n1. LM Studio esté corriendo\n2. El servidor local esté activo en http://localhost:1234\n3. Ve a la pestaña "Developer" en LM Studio y asegúrate de que el servidor esté iniciado'
+        error_msg = 'No se puede conectar a LM Studio. Asegúrate de que:\n1. LM Studio esté corriendo\n2. El servidor local esté activo en http://192.168.10.253:1234\n3. Ve a la pestaña "Developer" en LM Studio y asegúrate de que el servidor esté iniciado'
         print(f"❌ {error_msg}")
         return {
             'success': False,
