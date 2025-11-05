@@ -13,8 +13,15 @@ import tempfile
 from datetime import datetime
 import uuid
 from threading import Thread
-import whisper
 import re
+
+# Importar whisper de forma opcional (puede no estar instalado)
+try:
+    import whisper
+    WHISPER_AVAILABLE = True
+except ImportError:
+    WHISPER_AVAILABLE = False
+    print("⚠️ Whisper no está instalado. La funcionalidad de audio estará limitada.")
 
 # Importar configuración
 from config import *
@@ -1460,6 +1467,12 @@ def process_audio_with_whisper(audio_base64):
     Procesa audio usando Whisper para obtener transcripción
     Basado en el script funcional de transcribe_audio.py
     """
+    if not WHISPER_AVAILABLE:
+        return {
+            'success': False,
+            'error': 'Whisper no está instalado. Por favor, ejecuta install_whisper.bat para instalarlo.'
+        }
+    
     temp_file_path = None
     
     try:
@@ -2145,12 +2158,12 @@ def process_image_with_lm_studio(image_base64):
 
 if __name__ == '__main__':
     print("🚀 Iniciando Web-App de Incidencias...")
-    print(f"📱 Accede desde tu móvil a: http://127.0.0.1:5005")
+    print(f"📱 Accede desde tu móvil a: http://127.0.0.1:5015")
     print("💡 Asegúrate de estar en la misma red WiFi")
     print("🔐 Sistema de sesiones por dispositivo activado")
     
     # Iniciar limpieza de sesiones
     cleanup_expired_sessions()
     
-    app.run(host='127.0.0.1', port=5005, debug=True)
+    app.run(host='127.0.0.1', port=5015, debug=True)
 

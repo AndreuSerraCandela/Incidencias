@@ -131,7 +131,7 @@ def test_server():
     """Probar que el servidor responda correctamente"""
     try:
         # Probar endpoint de salud
-        response = requests.get('http://localhost:5005/health', timeout=5)
+        response = requests.get('http://localhost:5015/health', timeout=5)
         if response.status_code == 200:
             print_status("Endpoint /health responde correctamente ✓", "SUCCESS")
             return True
@@ -238,7 +238,7 @@ def main():
         print("\n📱 Para usar desde tu móvil:")
         print("   1. Asegúrate de estar en la misma red WiFi")
         print("   2. Encuentra la IP de tu PC con 'ipconfig'")
-        print("   3. Abre http://[IP_DE_TU_PC]:5005 en tu móvil")
+        print("   3. Abre http://[IP_DE_TU_PC]:5015 en tu móvil")
     else:
         print_status(f"❌ {total_tests - tests_passed} PRUEBAS FALLARON ({tests_passed}/{total_tests})", "ERROR")
         print_status("🔧 Revisa los errores anteriores y corrígelos", "WARNING")

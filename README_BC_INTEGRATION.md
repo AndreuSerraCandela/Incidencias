@@ -168,7 +168,7 @@ python test_base64_validation.py
 ### Prueba Manual desde el Navegador
 
 1. Inicia la aplicación web: `python web_app.py`
-2. Accede a: `http://127.0.0.1:5005/api/test-bc-connection`
+2. Accede a: `http://127.0.0.1:5015/api/test-bc-connection`
 3. Verifica la respuesta en la consola
 
 ## Logs y Debugging

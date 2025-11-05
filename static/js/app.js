@@ -354,8 +354,9 @@ function closePhotoModal() {
     elements.photoModal.style.display = 'none';
     
     // Restablecer estado del modal para la próxima vez
-    // Ocultar vista previa si existe
-    if (elements.photoPreview) {
+    // NO ocultar la vista previa si hay una foto capturada - el usuario debe poder verla y enviarla
+    // Solo ocultar la vista previa si no hay foto capturada
+    if (elements.photoPreview && !currentPhotoData) {
         elements.photoPreview.style.display = 'none';
     }
     // Ocultar botón de volver a tomar
@@ -550,10 +551,10 @@ function capturePhoto() {
         // Detener cámara
         stopPhotoCamera();
         
-        // Cerrar modal automáticamente después de capturar
+        // Cerrar modal para mostrar la vista previa con el botón de enviar incidencia
         setTimeout(() => {
             closePhotoModal();
-        }, 1000);
+        }, 500);
         
     } catch (error) {
         console.error('Error al capturar foto:', error);
@@ -606,10 +607,10 @@ function handlePhotoImport(event) {
             // Detener cámara si está activa
             stopPhotoCamera();
             
-            // Cerrar modal automáticamente después de importar
+            // Cerrar modal para mostrar la vista previa con el botón de enviar incidencia
             setTimeout(() => {
                 closePhotoModal();
-            }, 1000);
+            }, 500);
             
             // Limpiar el input para permitir seleccionar el mismo archivo de nuevo
             if (elements.photoFileInput) {
