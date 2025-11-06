@@ -1507,12 +1507,19 @@ def process_audio_with_whisper(audio_base64):
         model = whisper.load_model("base")
 
         print(f"🎤 Transcribiendo '{temp_file_path}'...")
-        # Transcribir el audio
-        result = model.transcribe(temp_file_path, language="es")
+        # Transcribir el audio con initial_prompt para guiar la transcripción de números
+        # El initial_prompt ayuda a Whisper a entender mejor el contexto y transcribir números como dígitos
+        result = model.transcribe(
+            temp_file_path, 
+            language="es")
 
         # Obtener el texto transcrito
         transcription = result["text"].strip()
         
+        # Post-procesar para convertir números escritos en palabras a dígitos
+        #transcription = convert_numbers_to_digits(transcription)
+        # remplazar , por espacios y guiones por espacios
+        transcription = transcription.replace(',', ' ').replace('-', ' ')
         print(f"🎤 Whisper transcripción: {transcription}")
         
         return {
@@ -1539,17 +1546,267 @@ def process_audio_with_whisper(audio_base64):
             except Exception as e:
                 print(f"⚠️ Error eliminando archivo temporal {temp_file_path}: {e}")
 
+
+
 # Función para extraer información de parada del texto
 def extract_stop_info(text):
     """
     Extrae el número de parada y descripción del texto transcrito
     """
     import re
+     # URL de LM Studio (puerto por defecto)
+    lm_studio_url = "http://192.168.10.253:1234/v1/chat/completions"
+        
+        # Prompt para Llava - Versión que FUNCIONÓ (según el usuario)
+        # El modelo primero describe lo que ve y luego extrae la información
+    prompt ='Puedes devolverme un json con el número de parada (sin espacios) y, la incidencia de este texto: ' + text
+    prompt_with_system = prompt
+        
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": prompt_with_system
+                }
+            ]
+        }
+    ]
+        
+    # Si el modelo no soporta imágenes, solo enviamos texto
+    # (algunos modelos de LM Studio pueden no ser multimodales)
+    # Ajustes para Gemma 3 27B: modelo más grande requiere más tokens y tiempo
+    payload = {
+        "model": "local-model",  # LM Studio usa este nombre genérico
+        "messages": messages,
+        "temperature": 0.2,  # Temperatura más baja para respuestas más consistentes con Gemma
+        "max_tokens": 2000  # Aumentar tokens para Gemma 3 27B (modelo más grande)
+    }
+    
+    print(f"🤖 Enviando texto a LM Studio en {lm_studio_url}...")
+    print(f"📊 Parámetros: temperature={payload['temperature']}, max_tokens={payload['max_tokens']}")
+    
+    # Verificar el tamaño del payload
+    import json as json_lib
+    payload_str = json_lib.dumps(payload)
+    payload_size_mb = len(payload_str.encode('utf-8')) / 1024 / 1024
+    print(f"📦 Tamaño del payload: {payload_size_mb:.2f} MB")
+
+    try:
+        print(f"🚀 Enviando petición a LM Studio (timeout: 100s)...")
+        import time
+        start_time = time.time()
+        
+        response = requests.post(
+            lm_studio_url,
+            json=payload,
+            timeout=100,  # Aumentar timeout a 250s para Gemma 3 27B (modelo más grande y lento)
+            headers={'Content-Type': 'application/json'}
+        )
+        
+        elapsed_time = time.time() - start_time
+        print(f"⏱️ Tiempo transcurrido: {elapsed_time:.2f} segundos")
+        
+        print(f"📡 Respuesta del servidor (multimodal): status={response.status_code}")
+        
+        if response.status_code == 200:
+            result = response.json()
+            print(f"📋 Resultado completo de LM Studio (primeros 500 chars): {str(result)[:500]}")
+            content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+            
+            if not content:
+                print("⚠️ La respuesta del modelo está vacía")
+                return {
+                    'stop_number': None,
+                    'description': 'Incidencia reportada por audio'
+                }
+            
+            print(f"🤖 Respuesta completa de LM Studio (TEXT): {content}")
+            print(f"📏 Longitud de la respuesta: {len(content)} caracteres")
+            
+            # Guardar el contenido original
+            original_content = content
+            #"content": "{\n  \"numero_de_parada\": 625,\n  \"incidencia\": \"Cristal roto\"\n}
+            
+            # Intentar extraer JSON del contenido
+            # Buscar JSON dentro de bloques ```json ... ``` o ``` ... ```
+            code_block_match = re.search(r'```(?:json)?\s*(\{[\s\S]*?)\s*```', content, re.DOTALL)
+            if code_block_match:
+                extracted_json = code_block_match.group(1)
+                print(f"✅ JSON extraído de bloque de código markdown")
+                content = extracted_json
+            
+            # Intentar encontrar JSON con stop_number y description
+            json_match = re.search(r'\{[\s\S]*?"(?:stop_number|Numero de parada|numero de parada|Número de parada)"[\s\S]*?"(?:description|descripci[oó]n de la incidencia|descripcion de la incidencia)"[\s\S]*?\}', content, re.DOTALL)
+            
+            if not json_match:
+                # Intentar encontrar JSON que empiece con stop_number
+                json_match = re.search(r'\{[\s\S]*?"(?:stop_number|Numero de parada|numero de parada|Número de parada)"[\s\S]*?\}', content, re.DOTALL)
+            
+            if json_match:
+                json_str = json_match.group(0)
+                print(f"✅ JSON encontrado: {json_str[:500]}...")
+                import json as json_lib
+                ai_data = None
+                try:
+                    # Intentar parsear el JSON
+                    ai_data = json_lib.loads(json_str)
+                    print(f"✅ JSON parseado correctamente")
+                except json_lib.JSONDecodeError as e:
+                    print(f"⚠️ Error parseando JSON: {e}")
+                    print(f"⚠️ Intentando extraer campos manualmente...")
+                    # Extraer campos manualmente con regex
+                    stop_num_match = re.search(r'"(?:stop_number|parada|Numero de parada|numero de parada|Número de parada)"\s*:\s*"([^"]+)"', json_str, re.IGNORECASE)
+                    desc_match = re.search(r'"(?:description|incidencia|descripci[oó]n de la incidencia|descripcion de la incidencia|descripci[oó]n)"\s*:\s*"([^"]*)"', json_str, re.IGNORECASE | re.DOTALL)
+                    
+                    if stop_num_match or desc_match:
+                        ai_data = {}
+                        if stop_num_match:
+                            ai_data['stop_number'] = stop_num_match.group(1)
+                        if desc_match:
+                            ai_data['description'] = desc_match.group(1).strip()
+                        print(f"✅ Campos extraídos manualmente: {ai_data}")
+                    else:
+                        print(f"❌ No se pudieron extraer campos del JSON")
+                        ai_data = None
+                
+                if ai_data:
+                    # Buscar número de parada con diferentes nombres posibles
+                    stop_num = (ai_data.get('stop_number') or 
+                               ai_data.get('Numero de parada') or 
+                               ai_data.get('numero de parada') or 
+                               ai_data.get('Número de parada') or ai_data.get('numero_de_parada') or ai_data.get('parada'))
+                    
+                    # Buscar descripción de la incidencia con diferentes nombres posibles
+                    desc = None
+                    if isinstance(ai_data, dict):
+                        # Buscar específicamente el campo de descripción de la incidencia
+                        for key in ai_data.keys():
+                            if key.lower() in ['descripción de la incidencia', 'descripcion de la incidencia', 'incidencia']:
+                                desc = ai_data[key]
+                                break
+                        
+                        # Si no se encontró, buscar con otros nombres
+                        if not desc:
+                            desc = (ai_data.get('description') or 
+                                   ai_data.get('descripción') or 
+                                   ai_data.get('descripcion') or 
+                                   ai_data.get('incidencia') or 
+                                   '')
+                    
+                    # Validar y limpiar valores
+                    if stop_num and isinstance(stop_num, str):
+                        stop_num = stop_num.strip()
+                        # Asegurar que empieza con P si no lo tiene
+                        if stop_num and not stop_num.upper().startswith('P'):
+                            stop_num = f"P{stop_num}"
+                    
+                    if not desc or not isinstance(desc, str):
+                        desc = ''
+                    else:
+                        desc = desc.strip()
+                    
+                    # Limpiar la descripción de campos JSON no deseados
+                    if desc:
+                        desc = re.sub(r'"(?:pasos seguidos|conclusi[oó]n)"\s*:\s*\[?[^\]]*\]?', '', desc, flags=re.IGNORECASE | re.DOTALL)
+                        desc = re.sub(r'\s+', ' ', desc).strip()
+                    
+                    # Asegurar valores finales
+                    if not stop_num or stop_num == 'null' or stop_num == 'None' or (isinstance(stop_num, str) and stop_num.lower().strip() == 'null'):
+                        stop_num = None
+                    
+                    if not desc or desc == 'null' or desc == 'None' or desc.strip() == '':
+                        desc = 'Incidencia reportada por audio'
+                    
+                    print(f"📤 Resultado extraído del JSON:")
+                    print(f"  - stop_number: {stop_num}")
+                    print(f"  - description: {desc[:100] if desc else 'vacía'}...")
+                    
+                    return {
+                        'stop_number': stop_num,
+                        'description': desc
+                    }
+            
+            # Si no se encontró JSON, intentar extraer información con regex del texto original
+            print("⚠️ No se encontró JSON válido, intentando extracción manual del texto...")
+            return extract_stop_info_fallback(original_content)
+    except requests.exceptions.Timeout:
+            print("⚠️ Timeout al procesar con LM Studio")
+            # Intentar extraer información del texto original si existe
+            return {
+                'stop_number': None,
+                'description': 'Incidencia reportada por audio'
+            }
+    except Exception as e:
+        print(f"❌ Error procesando texto con LM Studio: {type(e).__name__}: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        # Intentar extraer información del texto original si existe
+        return {
+            'stop_number': None,
+            'description': 'Incidencia reportada por audio'
+        }        
+    # # Buscar patrones que empiecen con "P" (las paradas SIEMPRE empiezan con P)
+    # # Priorizar códigos que empiecen con P
+    # stop_patterns = [
+    #     r'\bP\s*(\d+)\b',  # P1171, P 1171, P625 (sin capturar la P, la agregamos después)
+    #     r'\bP(\d+)\b',  # P1171 sin espacio
+    #     r'parada\s*[:\-]?\s*P?\s*(\d+)',  # Parada P1171, Parada 1171
+    #     r'parada\s+P\s*(\d+)',  # Parada P 1171
+    # ]
+    
+    # stop_number = None
+    # for pattern in stop_patterns:
+    #     match = re.search(pattern, text, re.IGNORECASE)
+    #     if match:
+    #         # Siempre agregar "P" al inicio
+    #         num = match.group(1).strip()
+    #         if num:
+    #             stop_number = f"P{num}"
+    #             break
+    
+    # # Si no se encuentra con patrones específicos, buscar "P" seguido de números
+    # if not stop_number:
+    #     # Buscar explícitamente "P" seguido de números
+    #     explicit_code = re.search(r'\bP\s*(\d{3,})\b', text, re.IGNORECASE)
+    #     if explicit_code:
+    #         stop_number = f"P{explicit_code.group(1)}"
+    #     else:
+    #         # Buscar "P" seguido de cualquier número
+    #         p_code = re.search(r'\bP\s*(\d+)\b', text, re.IGNORECASE)
+    #         if p_code:
+    #             stop_number = f"P{p_code.group(1)}"
+    
+    # # NO usar números solos (podrían ser números de línea)
+    # # Solo usar si vienen precedidos de "P" o "parada"
+    
+    # # Extraer descripción (todo el texto excepto la parte de la parada)
+    # description = text
+    # if stop_number:
+    #     # Remover la parte de la parada del texto
+    #     for pattern in stop_patterns:
+    #         description = re.sub(pattern, '', description.lower()).strip()
+    #     # Limpiar caracteres extra
+    #     description = re.sub(r'[^\w\s]', ' ', description).strip()
+    #     description = re.sub(r'\s+', ' ', description)
+    
+    # return {
+    #     'stop_number': stop_number,
+    #     'description': description if description else 'Incidencia reportada por audio'
+    # }
+
+# Función de fallback para extraer información del texto cuando no hay JSON
+def extract_stop_info_fallback(text):
+    """
+    Extrae el número de parada y descripción del texto usando regex
+    Se usa como fallback cuando no se encuentra JSON válido
+    """
+    import re
     
     # Buscar patrones que empiecen con "P" (las paradas SIEMPRE empiezan con P)
-    # Priorizar códigos que empiecen con P
     stop_patterns = [
-        r'\bP\s*(\d+)\b',  # P1171, P 1171, P625 (sin capturar la P, la agregamos después)
+        r'\bP\s*(\d+)\b',  # P1171, P 1171, P625
         r'\bP(\d+)\b',  # P1171 sin espacio
         r'parada\s*[:\-]?\s*P?\s*(\d+)',  # Parada P1171, Parada 1171
         r'parada\s+P\s*(\d+)',  # Parada P 1171
@@ -1559,7 +1816,6 @@ def extract_stop_info(text):
     for pattern in stop_patterns:
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
-            # Siempre agregar "P" al inicio
             num = match.group(1).strip()
             if num:
                 stop_number = f"P{num}"
@@ -1567,29 +1823,26 @@ def extract_stop_info(text):
     
     # Si no se encuentra con patrones específicos, buscar "P" seguido de números
     if not stop_number:
-        # Buscar explícitamente "P" seguido de números
         explicit_code = re.search(r'\bP\s*(\d{3,})\b', text, re.IGNORECASE)
         if explicit_code:
             stop_number = f"P{explicit_code.group(1)}"
         else:
-            # Buscar "P" seguido de cualquier número
             p_code = re.search(r'\bP\s*(\d+)\b', text, re.IGNORECASE)
             if p_code:
                 stop_number = f"P{p_code.group(1)}"
-    
-    # NO usar números solos (podrían ser números de línea)
-    # Solo usar si vienen precedidos de "P" o "parada"
     
     # Extraer descripción (todo el texto excepto la parte de la parada)
     description = text
     if stop_number:
         # Remover la parte de la parada del texto
         for pattern in stop_patterns:
-            description = re.sub(pattern, '', description.lower()).strip()
+            description = re.sub(pattern, '', description, flags=re.IGNORECASE).strip()
         # Limpiar caracteres extra
         description = re.sub(r'[^\w\s]', ' ', description).strip()
         description = re.sub(r'\s+', ' ', description)
-    
+    print(f"📤 Resultado extraído del texto:")
+    print(f"  - stop_number: {stop_number}")
+    print(f"  - description: {description[:100] if description else 'vacía'}...")
     return {
         'stop_number': stop_number,
         'description': description if description else 'Incidencia reportada por audio'

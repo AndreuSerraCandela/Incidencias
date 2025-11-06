@@ -178,70 +178,237 @@ main {
 /* Botones de acción */
 .action-buttons {
     display: flex;
-    gap: 15px;
+    flex-direction: column;
+    gap: 12px;
     flex-wrap: wrap;
+    justify-content: center;
+}
+
+.action-buttons-row {
+    display: flex;
+    gap: 12px;
+    flex-wrap: wrap;
+    justify-content: center;
+    width: 100%;
 }
 
 .btn {
-    padding: 15px 30px;
-    border: 1px solid var(--malla-hover);
-    border-radius: 0;
-    font-size: 16px;
-    font-weight: 600;
+    padding: 20px 16px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 500;
     cursor: pointer;
-    transition: all 0.3s ease;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 10px;
-    flex: 1;
-    min-width: 200px;
     justify-content: center;
-    background-color: var(--malla-primary);
-    color: var(--malla-text);
+    gap: 8px;
+    flex: 1;
+    min-width: 120px;
+    max-width: 160px;
+    position: relative;
+    overflow: hidden;
+    background: white;
+    color: #333;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    border: 1px solid #f0f0f0;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.btn::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.05);
+    transform: translate(-50%, -50%);
+    transition: width 0.4s, height 0.4s;
+}
+
+.btn:active::before {
+    width: 200px;
+    height: 200px;
+}
+
+.btn i {
+    font-size: 28px;
+    color: #333;
+    transition: transform 0.2s ease, color 0.2s ease;
+    margin-bottom: 4px;
+}
+
+.btn:hover i,
+.btn:active i {
+    transform: scale(1.05);
 }
 
 .btn:hover {
     transform: translateY(-2px);
-    box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+    border-color: #e0e0e0;
 }
 
+.btn:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+}
+
+/* Estilos específicos para mantener colores en iconos si es necesario */
 .btn-primary {
-    background-color: var(--malla-primary);
-    border-color: var(--malla-hover);
-    color: var(--malla-text);
+    background: white;
+    color: #333;
+}
+
+.btn-primary i {
+    color: #667eea;
 }
 
 .btn-primary:hover {
-    background-color: var(--malla-hover);
-    color: white !important;
+    background: white;
+    color: #333;
+}
+
+.btn-primary:hover i {
+    color: #5568d3;
+}
+
+.btn-secondary {
+    background: white;
+    color: #333;
+}
+
+.btn-secondary i {
+    color: #f5576c;
+}
+
+.btn-secondary:hover {
+    background: white;
+    color: #333;
+}
+
+.btn-secondary:hover i {
+    color: #e4465b;
 }
 
 .btn-success {
-    background-color: var(--malla-primary);
-    border-color: var(--malla-hover);
-    color: var(--malla-text);
+    background: white;
+    color: #333;
+}
+
+.btn-success i {
+    color: #4facfe;
 }
 
 .btn-success:hover {
-    background-color: var(--malla-hover);
-    color: white !important;
+    background: white;
+    color: #333;
+}
+
+.btn-success:hover i {
+    color: #3a9bfe;
 }
 
 .btn-warning {
-    background-color: var(--malla-primary);
-    border-color: var(--malla-hover);
-    color: var(--malla-text);
+    background: white;
+    color: #333;
+}
+
+.btn-warning i {
+    color: #fa709a;
 }
 
 .btn-warning:hover {
-    background-color: var(--malla-hover);
-    color: white !important;
+    background: white;
+    color: #333;
+}
+
+.btn-warning:hover i {
+    color: #f95f8f;
+}
+
+/* Botón de enviar incidencia - mitad de altura, fondo azul muy claro */
+.btn-send-incidence {
+    padding: 10px 16px !important; /* Mitad de altura (20px -> 10px) */
+    background: #e3f2fd !important; /* Azul muy claro */
+    color: #1976d2 !important;
+    border: 1px solid #bbdefb !important;
+    width: 100%;
+    max-width: 100%;
+}
+
+.btn-send-incidence i {
+    color: #1976d2 !important;
+    font-size: 20px !important; /* Icono más pequeño */
+}
+
+.btn-send-incidence:hover {
+    background: #bbdefb !important;
+    color: #1565c0 !important;
+    transform: translateY(-1px);
+}
+
+.btn-send-incidence:hover i {
+    color: #1565c0 !important;
+}
+
+.btn-send-incidence:active {
+    background: #90caf9 !important;
+    transform: translateY(0);
+}
+
+.btn-info {
+    background: white;
+    color: #333;
+}
+
+.btn-info i {
+    color: #30cfd0;
+}
+
+.btn-info:hover {
+    background: white;
+    color: #333;
+}
+
+.btn-info:hover i {
+    color: #28b8b9;
+}
+
+.btn-danger {
+    background: white;
+    color: #333;
+}
+
+.btn-danger i {
+    color: #ff6b6b;
+}
+
+.btn-danger:hover {
+    background: white;
+    color: #333;
+}
+
+.btn-danger:hover i {
+    color: #ff5555;
 }
 
 .btn:disabled {
-    opacity: 0.6;
+    opacity: 0.4;
     cursor: not-allowed;
     transform: none;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    background: #f5f5f5;
+}
+
+.btn:disabled:hover {
+    transform: none;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    border-color: #f0f0f0;
 }
 
 /* Secciones de resultados */
@@ -369,23 +536,31 @@ main {
 }
 
 .close-btn {
-    background: none;
+    background: rgba(255, 255, 255, 0.1);
     border: none;
     color: white;
-    font-size: 28px;
+    font-size: 24px;
     cursor: pointer;
     padding: 0;
-    width: 30px;
-    height: 30px;
+    width: 36px;
+    height: 36px;
     display: flex;
     align-items: center;
     justify-content: center;
     border-radius: 50%;
-    transition: background-color 0.3s ease;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    font-weight: 300;
+    line-height: 1;
 }
 
 .close-btn:hover {
-    background-color: rgba(255,255,255,0.2);
+    background-color: rgba(255, 255, 255, 0.25);
+    transform: rotate(90deg) scale(1.1);
+}
+
+.close-btn:active {
+    transform: rotate(90deg) scale(0.95);
+    background-color: rgba(255, 255, 255, 0.15);
 }
 
 .modal-body {
@@ -572,14 +747,17 @@ main {
 /* Controles de cámara */
 .camera-controls {
     display: flex;
-    gap: 15px;
+    gap: 12px;
     justify-content: center;
     flex-wrap: wrap;
 }
 
 .camera-controls .btn {
-    min-width: 150px;
-    flex: none;
+    min-width: 140px;
+    flex: 1;
+    max-width: 180px;
+    padding: 16px 12px;
+    font-size: 13px;
 }
 
 /* Controles de emergencia */
@@ -614,10 +792,39 @@ main {
     
     .action-buttons {
         flex-direction: column;
+        gap: 10px;
+        justify-content: space-between;
+    }
+    
+    .action-buttons-row {
+        flex-direction: row;
+        gap: 10px;
+        justify-content: space-between;
+        width: 100%;
     }
     
     .btn {
         min-width: auto;
+        flex: 1;
+        padding: 24px 12px;
+        font-size: 13px;
+        border-radius: 10px;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        max-width: none;
+    }
+    
+    .btn i {
+        font-size: 32px;
+        margin-bottom: 6px;
+    }
+    
+    .btn-send-incidence {
+        padding: 12px 16px !important; /* Un poco más alto en móvil */
+        font-size: 14px !important;
+    }
+    
+    .btn-send-incidence i {
+        font-size: 24px !important;
     }
     
     .modal-content {
@@ -632,28 +839,40 @@ main {
     .camera-controls {
         flex-direction: column;
         align-items: center;
+        gap: 12px;
     }
     
     .camera-controls .btn {
         width: 100%;
-        max-width: 200px;
+        max-width: 100%;
+        padding: 20px 16px;
+        font-size: 14px;
+    }
+    
+    .camera-controls .btn i {
+        font-size: 28px;
     }
     
     .emergency-controls {
         flex-direction: column;
         align-items: center;
+        gap: 12px;
     }
     
     .emergency-controls .btn {
         width: 100%;
-        max-width: 200px;
+        max-width: 100%;
+        padding: 18px 24px;
+        font-size: 18px;
     }
 }
 
 /* Dispositivos móviles */
 .mobile-device .btn {
-    padding: 18px 25px;
-    font-size: 18px;
+    padding: 24px 16px;
+    font-size: 14px;
+    border-radius: 10px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .mobile-device .modal-content {
@@ -667,11 +886,11 @@ main {
 
 /* Animaciones */
 .btn, .modal-content, .results-section, .photo-section {
-    transition: all 0.3s ease;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .btn:active {
-    transform: scale(0.98);
+    transform: translateY(0) scale(0.98);
 }
 
 /* Estados de carga */
@@ -733,18 +952,30 @@ main {
 }
 
 .btn-logout {
-    background: #dc3545;
+    background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
     color: white;
     border: none;
-    padding: 4px 8px;
-    border-radius: 0;
+    padding: 6px 12px;
+    border-radius: 8px;
     cursor: pointer;
     font-size: 12px;
-    transition: background 0.3s;
+    font-weight: 600;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 2px 6px rgba(220, 53, 69, 0.3);
+    display: flex;
+    align-items: center;
+    gap: 4px;
 }
 
 .btn-logout:hover {
-    background: #c82333;
+    background: linear-gradient(135deg, #c82333 0%, #bd2130 100%);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(220, 53, 69, 0.4);
+}
+
+.btn-logout:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 6px rgba(220, 53, 69, 0.3);
 }
 
 /* Formulario de login */
@@ -814,23 +1045,60 @@ main {
 
 /* Botón de login principal */
 .btn-login {
-    background: var(--malla-hover);
+    background: linear-gradient(135deg, var(--malla-hover) 0%, #7a0823 100%);
     color: white;
     border: none;
-    padding: 12px 24px;
-    border-radius: 0;
+    padding: 16px 32px;
+    border-radius: 16px;
     font-size: 16px;
-    font-weight: 500;
+    font-weight: 600;
     cursor: pointer;
-    transition: all 0.3s;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     display: flex;
     align-items: center;
-    gap: 8px;
+    justify-content: center;
+    gap: 10px;
+    box-shadow: 0 4px 12px rgba(153, 10, 44, 0.3);
+    position: relative;
+    overflow: hidden;
+}
+
+.btn-login::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.3);
+    transform: translate(-50%, -50%);
+    transition: width 0.6s, height 0.6s;
+}
+
+.btn-login:active::before {
+    width: 300px;
+    height: 300px;
 }
 
 .btn-login:hover {
-    background: #7a0823;
+    background: linear-gradient(135deg, #7a0823 0%, #5d061a 100%);
+    transform: translateY(-3px);
+    box-shadow: 0 8px 20px rgba(153, 10, 44, 0.4);
+}
+
+.btn-login:active {
     transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(153, 10, 44, 0.3);
+}
+
+.btn-login i {
+    font-size: 18px;
+    transition: transform 0.3s ease;
+}
+
+.btn-login:hover i {
+    transform: scale(1.1);
 }
 
 /* Responsive para login */
@@ -849,8 +1117,9 @@ main {
     .btn-login {
         width: 100%;
         justify-content: center;
-        padding: 16px;
+        padding: 20px;
         font-size: 18px;
+        border-radius: 20px;
     }
 }
 
@@ -974,29 +1243,59 @@ main {
 }
 
 .select-task-btn {
-    background: var(--malla-hover);
+    background: linear-gradient(135deg, var(--malla-hover) 0%, #7a0823 100%);
     color: white;
     border: none;
-    padding: 10px 20px;
-    border-radius: 6px;
+    padding: 12px 24px;
+    border-radius: 12px;
     font-size: 14px;
-    font-weight: 500;
+    font-weight: 600;
     cursor: pointer;
-    transition: all 0.3s ease;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     white-space: nowrap;
+    box-shadow: 0 4px 12px rgba(153, 10, 44, 0.3);
+    position: relative;
+    overflow: hidden;
+}
+
+.select-task-btn::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 0;
+    height: 0;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.3);
+    transform: translate(-50%, -50%);
+    transition: width 0.6s, height 0.6s;
+}
+
+.select-task-btn:active::before {
+    width: 300px;
+    height: 300px;
 }
 
 .select-task-btn:hover {
-    background: #7a0823;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    background: linear-gradient(135deg, #7a0823 0%, #5d061a 100%);
+    transform: translateY(-2px);
+    box-shadow: 0 6px 16px rgba(153, 10, 44, 0.4);
 }
 
 .select-task-btn:active {
     transform: translateY(0);
+    box-shadow: 0 2px 8px rgba(153, 10, 44, 0.3);
+}
+
+.select-task-btn i {
+    transition: transform 0.3s ease;
+}
+
+.select-task-btn:hover i {
+    transform: scale(1.1);
 }
 
 /* Acciones del modal de tareas */
@@ -1030,8 +1329,9 @@ main {
     .select-task-btn {
         width: 100%;
         justify-content: center;
-        padding: 12px 20px;
+        padding: 16px 24px;
         font-size: 16px;
+        border-radius: 16px;
     }
     
     .task-actions {
@@ -1234,6 +1534,9 @@ main {
 
 .audio-controls .btn {
     min-width: 120px;
+    max-width: 160px;
+    padding: 16px 12px;
+    font-size: 13px;
 }
 
 .audio-preview {
@@ -1283,7 +1586,13 @@ main {
     
     .audio-controls .btn {
         width: 100%;
-        max-width: 200px;
+        max-width: 100%;
+        padding: 20px 16px;
+        font-size: 14px;
+    }
+    
+    .audio-controls .btn i {
+        font-size: 28px;
     }
 }
 

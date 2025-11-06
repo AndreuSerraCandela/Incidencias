@@ -136,14 +136,16 @@
             
             <!-- Botones de acción -->
             <div id="actionButtons" class="action-buttons" style="display: none;">
-                <button id="scanQRBtn" class="btn btn-primary">
-                    <i class="fas fa-qrcode"></i> Escanear QR
-                </button>
-                <button id="recordAudioBtn" class="btn btn-secondary">
-                    <i class="fas fa-microphone"></i> Grabar Audio
-                </button>
-                <button id="takePhotoBtn" class="btn btn-success">
-                    <i class="fas fa-camera"></i> Reportar Incidencia
+                <div class="action-buttons-row">
+                    <button id="recordAudioBtn" class="btn btn-secondary">
+                        <i class="fas fa-microphone"></i> Grabar Audio
+                    </button>
+                    <button id="takePhotoBtn" class="btn btn-success">
+                        <i class="fas fa-camera"></i> Reportar Incidencia
+                    </button>
+                </div>
+                <button id="sendIncidenceBtn" class="btn btn-send-incidence" style="display: none;">
+                    <i class="fas fa-exclamation-triangle"></i> Enviar Incidencia
                 </button>
             </div>
             
@@ -153,28 +155,25 @@
             </div>
         </div>
 
-        <!-- Resultados del QR -->
-        <div id="qrResults" class="results-section" style="display: none;">
-            <h3><i class="fas fa-check-circle"></i> Código QR Escaneado</h3>
-            <div class="qr-info">
-                <p><strong>Datos:</strong> <a id="qrData" href="#" target="_blank" style="color: #007bff; text-decoration: underline; cursor: pointer;"></a></p>
-                <p><strong>Tipo:</strong> <span id="qrType"></span></p>
-            </div>
-        </div>
-
         <!-- Vista previa de la incidencia -->
         <div id="photoPreview" class="photo-section" style="display: none;">
             <h3><i class="fas fa-exclamation-triangle"></i> Vista Previa de la Incidencia</h3>
             <div class="photo-container">
                 <img id="previewImage" src="" alt="Vista previa de la incidencia" class="preview-img">
             </div>
-            <button id="sendIncidenceBtn" class="btn btn-warning">
-                <i class="fas fa-exclamation-triangle"></i> Enviar Incidencia
-            </button>
             <p class="upload-info">
                 <i class="fas fa-info-circle"></i> 
                 La incidencia se enviará al sistema. Puedes seguir usando la aplicación.
             </p>
+        </div>
+
+        <!-- Resultados del NFC -->
+        <div id="qrResults" class="results-section" style="display: none;">
+            <h3><i class="fas fa-check-circle"></i> Etiqueta NFC Leída</h3>
+            <div class="qr-info">
+                <p><strong>Datos:</strong> <a id="qrData" href="#" target="_blank" style="color: #007bff; text-decoration: underline; cursor: pointer;"></a></p>
+                <p><strong>Tipo:</strong> <span id="qrType"></span></p>
+            </div>
         </div>
 
         <!-- Mensajes de estado -->

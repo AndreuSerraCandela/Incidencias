@@ -5,6 +5,7 @@ let currentQRData = null;
 let currentPhotoData = null;
 let qrDetectionInterval = null; // Para detección automática de QR
 let nfcScanning = false; // Evitar múltiples lecturas simultáneas
+let ndefReader = null; // Lector NFC para poder detenerlo
 
 // Variables para grabación de audio
 let mediaRecorder = null;
@@ -45,7 +46,6 @@ document.addEventListener('DOMContentLoaded', function() {
         logoutBtn: document.getElementById('logoutBtn'),
         
         // Elementos existentes
-        scanQRBtn: document.getElementById('scanQRBtn'),
         takePhotoBtn: document.getElementById('takePhotoBtn'),
         qrModal: document.getElementById('qrModal'),
         photoModal: document.getElementById('photoModal'),
@@ -68,7 +68,6 @@ document.addEventListener('DOMContentLoaded', function() {
         qrType: document.getElementById('qrType'),
         previewImage: document.getElementById('previewImage'),
         uploadBtn: document.getElementById('uploadBtn'),
-        readNFCBtn: document.getElementById('readNFCBtn'),
         recordAudioBtn: document.getElementById('recordAudioBtn'),
         sendIncidenceBtn: document.getElementById('sendIncidenceBtn'),
         taskId: document.getElementById('taskId'),
@@ -121,12 +120,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // Configurar event listeners
 function initializeEventListeners() {
-    // Botones principales - AMBOS AUTOMÁTICOS
-    if (elements.scanQRBtn) {
-        elements.scanQRBtn.addEventListener('click', startQRAutoScan);
-    }
+    // Botones principales
     if (elements.takePhotoBtn) {
-        elements.takePhotoBtn.addEventListener('click', startPhotoAutoCapture);
+        elements.takePhotoBtn.addEventListener('click', () => {
+            stopNFCScanning(); // Detener NFC al pulsar reportar incidencia
+            startPhotoAutoCapture();
+        });
     }
     
     // Cerrar modales
@@ -193,12 +192,12 @@ function initializeEventListeners() {
         elements.uploadBtn.addEventListener('click', uploadPhoto);
     }
 
-    // Leer NFC (si está disponible)
-    if (elements.readNFCBtn) {
-        elements.readNFCBtn.addEventListener('click', readNFC);
-    }
+    // Botones de acción
     if (elements.recordAudioBtn) {
-        elements.recordAudioBtn.addEventListener('click', startAudioRecording);
+        elements.recordAudioBtn.addEventListener('click', () => {
+            stopNFCScanning(); // Detener NFC al pulsar grabar audio
+            startAudioRecording();
+        });
     }
     // Enviar incidencia
     if (elements.sendIncidenceBtn) {
@@ -258,8 +257,9 @@ function checkDeviceCapabilities() {
     
     if (!hasGetUserMedia) {
         showStatus('Tu navegador no soporta acceso a la cámara', 'error');
-        elements.scanQRBtn.disabled = true;
-        elements.takePhotoBtn.disabled = true;
+        if (elements.takePhotoBtn) {
+            elements.takePhotoBtn.disabled = true;
+        }
     }
     
     // Verificar si es móvil
@@ -314,16 +314,21 @@ async function startPhotoAutoCapture() {
         if (elements.photoPreview) {
             elements.photoPreview.style.display = 'none';
         }
+        
+        // Ocultar botón de enviar incidencia
+        if (elements.sendIncidenceBtn) {
+            elements.sendIncidenceBtn.style.display = 'none';
+        }
         // Ocultar botón de volver a tomar
         if (elements.retakePhotoBtn) {
             elements.retakePhotoBtn.style.display = 'none';
         }
         // Mostrar botones de captura e importar
         if (elements.capturePhotoBtn) {
-            elements.capturePhotoBtn.style.display = 'inline-block';
+            elements.capturePhotoBtn.style.display = 'flex';
         }
         if (elements.importPhotoBtn) {
-            elements.importPhotoBtn.style.display = 'inline-block';
+            elements.importPhotoBtn.style.display = 'flex';
         }
         
         // Abrir modal inmediatamente
@@ -358,6 +363,11 @@ function closePhotoModal() {
     // Solo ocultar la vista previa si no hay foto capturada
     if (elements.photoPreview && !currentPhotoData) {
         elements.photoPreview.style.display = 'none';
+        
+        // Ocultar botón de enviar incidencia
+        if (elements.sendIncidenceBtn) {
+            elements.sendIncidenceBtn.style.display = 'none';
+        }
     }
     // Ocultar botón de volver a tomar
     if (elements.retakePhotoBtn) {
@@ -365,10 +375,10 @@ function closePhotoModal() {
     }
     // Mostrar botones de captura e importar para la próxima vez
     if (elements.capturePhotoBtn) {
-        elements.capturePhotoBtn.style.display = 'inline-block';
+        elements.capturePhotoBtn.style.display = 'flex';
     }
     if (elements.importPhotoBtn) {
-        elements.importPhotoBtn.style.display = 'inline-block';
+        elements.importPhotoBtn.style.display = 'flex';
     }
     
     showStatus('Modal de captura de foto cerrado', 'info');
@@ -539,12 +549,17 @@ function capturePhoto() {
         elements.previewImage.src = imageData;
         elements.photoPreview.style.display = 'block';
         
+        // Mostrar botón de enviar incidencia
+        if (elements.sendIncidenceBtn) {
+            elements.sendIncidenceBtn.style.display = 'flex';
+        }
+        
         // Cambiar botones
         elements.capturePhotoBtn.style.display = 'none';
         if (elements.importPhotoBtn) {
             elements.importPhotoBtn.style.display = 'none';
         }
-        elements.retakePhotoBtn.style.display = 'inline-block';
+        elements.retakePhotoBtn.style.display = 'flex';
         
         showStatus('Foto capturada. Revisa la vista previa.', 'success');
         
@@ -597,10 +612,15 @@ function handlePhotoImport(event) {
             elements.previewImage.src = imageData;
             elements.photoPreview.style.display = 'block';
             
+            // Mostrar botón de enviar incidencia
+            if (elements.sendIncidenceBtn) {
+                elements.sendIncidenceBtn.style.display = 'flex';
+            }
+            
             // Cambiar botones
             elements.capturePhotoBtn.style.display = 'none';
             elements.importPhotoBtn.style.display = 'none';
-            elements.retakePhotoBtn.style.display = 'inline-block';
+            elements.retakePhotoBtn.style.display = 'flex';
             
             showStatus('Foto importada. Revisa la vista previa.', 'success');
             
@@ -636,12 +656,18 @@ function handlePhotoImport(event) {
 function retakePhoto() {
     currentPhotoData = null;
     elements.photoPreview.style.display = 'none';
+    
+    // Ocultar botón de enviar incidencia
+    if (elements.sendIncidenceBtn) {
+        elements.sendIncidenceBtn.style.display = 'none';
+    }
+    
     elements.retakePhotoBtn.style.display = 'none';
     
     // Mostrar botones de captura e importar nuevamente
-    elements.capturePhotoBtn.style.display = 'inline-block';
+    elements.capturePhotoBtn.style.display = 'flex';
     if (elements.importPhotoBtn) {
-        elements.importPhotoBtn.style.display = 'inline-block';
+        elements.importPhotoBtn.style.display = 'flex';
     }
     
     // Mostrar imagen por defecto nuevamente
@@ -876,7 +902,7 @@ async function processImageWithAI() {
         }
         
         if (elements.confirmAIResultsBtn) {
-            elements.confirmAIResultsBtn.style.display = 'inline-block';
+            elements.confirmAIResultsBtn.style.display = 'flex';
         } else {
             console.error('❌ elements.confirmAIResultsBtn no encontrado');
         }
@@ -1059,44 +1085,38 @@ function extractQRIdFromData(qrData) {
 }
 
 // Leer etiqueta NFC y reutilizar flujo de QR
-async function readNFC() {
+// Función para iniciar escaneo NFC automático continuo
+async function startNFCAutoScan() {
     try {
         if (!('NDEFReader' in window)) {
-            showStatus('NFC no soportado por este navegador/dispositivo', 'warning');
+            console.log('⚠️ NFC no soportado por este navegador/dispositivo');
             return;
         }
 
         // Evitar múltiples lecturas simultáneas
         if (nfcScanning) {
-            showStatus('Lectura NFC ya en curso...', 'info');
             return;
         }
+        
         nfcScanning = true;
-        // Feedback visual: deshabilitar y marcar botón
-        if (elements.readNFCBtn) {
-            elements.readNFCBtn.disabled = true;
-            elements.readNFCBtn.dataset.originalBg = elements.readNFCBtn.style.backgroundColor || '';
-            elements.readNFCBtn.style.backgroundColor = '#ffc107'; // ámbar: escaneando
-        }
-
-        showStatus('Acerca la etiqueta NFC al dispositivo...', 'info');
-        const ndef = new NDEFReader();
-        await ndef.scan();
-
-        ndef.onreadingerror = () => {
-            showStatus('No se pudo leer la etiqueta NFC. Intenta nuevamente.', 'error');
-            // Feedback error
-            if (elements.readNFCBtn) {
-                elements.readNFCBtn.style.backgroundColor = '#dc3545'; // rojo
-                setTimeout(() => {
-                    elements.readNFCBtn.style.backgroundColor = elements.readNFCBtn.dataset.originalBg || '';
-                    elements.readNFCBtn.disabled = false;
-                }, 800);
-            }
-            nfcScanning = false;
+        console.log('📱 Iniciando escaneo NFC automático...');
+        
+        // Crear nuevo lector NFC
+        ndefReader = new NDEFReader();
+        
+        // Configurar manejadores de eventos
+        ndefReader.onreadingerror = () => {
+            // Error silencioso - continuar escaneando
+            console.log('⚠️ Error leyendo NFC, continuando escaneo...');
+            // Reiniciar escaneo después de un breve delay
+            setTimeout(() => {
+                if (nfcScanning) {
+                    startNFCAutoScan();
+                }
+            }, 1000);
         };
 
-        ndef.onreading = (event) => {
+        ndefReader.onreading = (event) => {
             try {
                 let textPayload = null;
                 for (const record of event.message.records) {
@@ -1112,9 +1132,12 @@ async function readNFC() {
                 }
 
                 if (!textPayload) {
-                    showStatus('Etiqueta NFC sin datos de texto/URL', 'warning');
+                    console.log('⚠️ Etiqueta NFC sin datos de texto/URL');
                     return;
                 }
+
+                // Detener escaneo temporalmente mientras procesamos
+                stopNFCScanning();
 
                 // Reutilizar flujo de QR: mostrar en UI y guardar currentQRData
                 currentQRData = textPayload;
@@ -1124,38 +1147,59 @@ async function readNFC() {
                 elements.qrType.textContent = 'NFC';
                 elements.qrResults.style.display = 'block';
                 showStatus('Etiqueta NFC leída correctamente', 'success');
-                // Beep corto + feedback visual éxito
-                playBeep(880, 120);
-                if (elements.readNFCBtn) {
-                    elements.readNFCBtn.style.backgroundColor = '#28a745'; // verde éxito
-                    setTimeout(() => {
-                        elements.readNFCBtn.style.backgroundColor = elements.readNFCBtn.dataset.originalBg || '';
-                        elements.readNFCBtn.disabled = false;
-                    }, 600);
+                
+                // Beep corto si la función existe
+                if (typeof playBeep === 'function') {
+                    playBeep(880, 120);
                 }
+                
+                // Abrir cámara automáticamente si no está abierta
+                if (elements.photoModal && elements.photoModal.style.display !== 'block') {
+                    startPhotoAutoCapture();
+                }
+                
+                // NO reiniciar escaneo aquí - se reiniciará después de enviar la incidencia
+                
             } catch (err) {
+                console.error('❌ Error procesando datos NFC:', err);
                 showStatus('Error procesando datos NFC: ' + err.message, 'error');
-                if (elements.readNFCBtn) {
-                    elements.readNFCBtn.style.backgroundColor = '#dc3545';
-                    setTimeout(() => {
-                        elements.readNFCBtn.style.backgroundColor = elements.readNFCBtn.dataset.originalBg || '';
-                        elements.readNFCBtn.disabled = false;
-                    }, 800);
-                }
+                // Reiniciar escaneo después del error
+                setTimeout(() => {
+                    if (nfcScanning) {
+                        startNFCAutoScan();
+                    }
+                }, 1000);
             }
-            nfcScanning = false;
         };
+
+        // Iniciar escaneo
+        await ndefReader.scan();
+        console.log('✅ Escaneo NFC activo');
+        
     } catch (error) {
-        showStatus('Error al iniciar lectura NFC: ' + error.message, 'error');
-        if (elements.readNFCBtn) {
-            elements.readNFCBtn.style.backgroundColor = '#dc3545';
-            setTimeout(() => {
-                elements.readNFCBtn.style.backgroundColor = elements.readNFCBtn.dataset.originalBg || '';
-                elements.readNFCBtn.disabled = false;
-            }, 800);
-        }
+        console.error('❌ Error al iniciar lectura NFC:', error);
         nfcScanning = false;
+        // Intentar reiniciar después de un delay
+        setTimeout(() => {
+            if (!nfcScanning && elements.actionButtons && elements.actionButtons.style.display !== 'none') {
+                startNFCAutoScan();
+            }
+        }, 2000);
     }
+}
+
+// Función para detener escaneo NFC
+function stopNFCScanning() {
+    if (ndefReader) {
+        try {
+            // No hay método directo para detener, pero podemos marcar como detenido
+            ndefReader = null;
+        } catch (e) {
+            console.log('⚠️ Error al detener NFC:', e);
+        }
+    }
+    nfcScanning = false;
+    console.log('🛑 Escaneo NFC detenido');
 }
 
 // ========================================
@@ -1179,7 +1223,7 @@ function closeAudioModal() {
 
 // Resetear UI de audio
 function resetAudioUI() {
-    elements.startRecordingBtn.style.display = 'inline-block';
+    elements.startRecordingBtn.style.display = 'flex';
     elements.stopRecordingBtn.style.display = 'none';
     elements.playAudioBtn.style.display = 'none';
     elements.deleteAudioBtn.style.display = 'none';
@@ -1211,9 +1255,9 @@ async function startRecording() {
             elements.audioPlayer.src = audioUrl;
             
             // Mostrar controles de reproducción
-            elements.playAudioBtn.style.display = 'inline-block';
-            elements.deleteAudioBtn.style.display = 'inline-block';
-            elements.useAudioBtn.style.display = 'inline-block';
+            elements.playAudioBtn.style.display = 'flex';
+            elements.deleteAudioBtn.style.display = 'flex';
+            elements.useAudioBtn.style.display = 'flex';
             elements.audioPreview.style.display = 'block';
             
             // Detener el stream
@@ -1225,7 +1269,7 @@ async function startRecording() {
         
         // Actualizar UI
         elements.startRecordingBtn.style.display = 'none';
-        elements.stopRecordingBtn.style.display = 'inline-block';
+        elements.stopRecordingBtn.style.display = 'flex';
         elements.recordingIndicator.style.display = 'block';
         
         // Actualizar duración cada segundo
@@ -1287,13 +1331,62 @@ async function useAudio() {
             showStatus('Convirtiendo audio a texto...', 'info');
             console.log('🎤 Iniciando conversión de audio a texto...');
             
-            // Convertir audio a texto usando Web Speech API
-            const transcribedText = await convertAudioToText(audioBlob);
-            console.log('🎤 Texto transcrito recibido:', transcribedText);
+            // Convertir audio a texto usando Whisper (backend)
+            const result = await convertAudioToText(audioBlob);
+            console.log('🎤 Resultado de Whisper:', result);
             
-            if (transcribedText) {
-                // Extraer número de parada y descripción del texto
-                const { stopNumber, description } = extractStopInfo(transcribedText);
+            if (result && result.success) {
+                let stopNumber = null;
+                let description = '';
+                let transcribedText = result.transcribed_text || '';
+                
+                // Verificar si description contiene un JSON string que necesita ser parseado
+                if (result.description && typeof result.description === 'string') {
+                    try {
+                        // Intentar parsear el JSON dentro de description
+                        const parsedDescription = JSON.parse(result.description);
+                        console.log('✅ JSON parseado de description:', parsedDescription);
+                        
+                        // Extraer parada e incidencia del JSON parseado
+                        if (parsedDescription.parada !== undefined && parsedDescription.parada !== null) {
+                            stopNumber = String(parsedDescription.parada);
+                            // Asegurar que empieza con P si no lo tiene
+                            if (stopNumber && !stopNumber.toUpperCase().startsWith('P')) {
+                                stopNumber = `P${stopNumber}`;
+                            }
+                        }
+                        
+                        if (parsedDescription.incidencia) {
+                            description = String(parsedDescription.incidencia);
+                        }
+                    } catch (e) {
+                        // Si no es JSON válido, usar description como texto normal
+                        console.log('⚠️ description no es JSON válido, usando como texto:', e);
+                        description = result.description;
+                    }
+                }
+                
+                // Si no se encontró stopNumber en el JSON, usar el del resultado o extraer del texto
+                if (!stopNumber) {
+                    if (result.stop_number !== undefined && result.stop_number !== null) {
+                        stopNumber = String(result.stop_number);
+                        if (!stopNumber.toUpperCase().startsWith('P')) {
+                            stopNumber = `P${stopNumber}`;
+                        }
+                    } else if (transcribedText) {
+                        // Intentar extraer del texto transcrito como fallback
+                        const extracted = extractStopInfo(transcribedText);
+                        stopNumber = extracted.stopNumber;
+                        if (!description) {
+                            description = extracted.description;
+                        }
+                    }
+                }
+                
+                // Si no hay descripción, usar el texto transcrito o un valor por defecto
+                if (!description || description.trim() === '') {
+                    description = transcribedText || 'Incidencia reportada por audio';
+                }
                 
                 console.log('📝 Texto transcrito:', transcribedText);
                 console.log('🚌 Número de parada extraído:', stopNumber);
@@ -1304,14 +1397,14 @@ async function useAudio() {
                 
                 // Almacenar datos para envío posterior
                 pendingIncidenceData = {
-                    stopNumber: stopNumber,
+                    stopNumber: stopNumber || null,
                     description: description,
-                    fullText: transcribedText,
+                    fullText: transcribedText || description,
                     hasAudio: true,
                     hasAI: false
                 };
                 
-                showStatus(`Audio procesado: Parada ${stopNumber} - ${description}`, 'success');
+                showStatus(`Audio procesado: Parada ${stopNumber || 'N/A'} - ${description}`, 'success');
                 console.log('✅ Datos de audio almacenados:', pendingIncidenceData);
                 
                 // Actualizar botón de reportar incidencia
@@ -1432,8 +1525,8 @@ async function convertAudioToText(audioBlob) {
             throw new Error(result.error || 'Error en transcripción');
         }
         
-        console.log('🎤 Whisper transcripción:', result.transcribed_text);
-        return result.transcribed_text;
+        console.log('🎤 Whisper transcripción:', result);
+        return result;
         
     } catch (error) {
         console.error('❌ Error en transcripción con Whisper:', error);
@@ -1851,6 +1944,12 @@ async function checkUploadStatus(filename) {
                 currentPhotoData = null;
                 currentQRData = null;
                 elements.photoPreview.style.display = 'none';
+                
+                // Ocultar botón de enviar incidencia
+                if (elements.sendIncidenceBtn) {
+                    elements.sendIncidenceBtn.style.display = 'none';
+                }
+                
                 elements.qrResults.style.display = 'none';
                 elements.taskId.value = '';
                 
@@ -1925,10 +2024,10 @@ function resetUIAfterIncidenceSent() {
     
     // Restablecer botones del modal de foto
     if (elements.capturePhotoBtn) {
-        elements.capturePhotoBtn.style.display = 'inline-block';
+        elements.capturePhotoBtn.style.display = 'flex';
     }
     if (elements.importPhotoBtn) {
-        elements.importPhotoBtn.style.display = 'inline-block';
+        elements.importPhotoBtn.style.display = 'flex';
     }
     if (elements.retakePhotoBtn) {
         elements.retakePhotoBtn.style.display = 'none';
@@ -1951,6 +2050,11 @@ function resetUIAfterIncidenceSent() {
     }
     if (elements.photoPreview) {
         elements.photoPreview.style.display = 'none';
+    }
+    
+    // Ocultar botón de enviar incidencia
+    if (elements.sendIncidenceBtn) {
+        elements.sendIncidenceBtn.style.display = 'none';
     }
     
     // Ocultar resultados de QR
@@ -1978,6 +2082,13 @@ function resetUIAfterIncidenceSent() {
     if (elements.photoFileInput) {
         elements.photoFileInput.value = '';
     }
+    
+    // Reiniciar escaneo NFC automático
+    setTimeout(() => {
+        if (elements.actionButtons && elements.actionButtons.style.display !== 'none') {
+            startNFCAutoScan();
+        }
+    }, 500);
     
     console.log('✅ UI limpiada completamente');
 }
@@ -2053,6 +2164,11 @@ function generateTestPhoto() {
     // Mostrar vista previa
     elements.previewImage.src = imageData;
     elements.photoPreview.style.display = 'block';
+    
+    // Mostrar botón de enviar incidencia
+    if (elements.sendIncidenceBtn) {
+        elements.sendIncidenceBtn.style.display = 'flex';
+    }
     
     showStatus('Foto de prueba generada', 'success');
 }
@@ -2496,8 +2612,12 @@ function updateUIForAuthenticatedUser() {
     elements.currentUsername.textContent = currentUser.username;
     
     // Habilitar botones de acción
-    elements.scanQRBtn.disabled = false;
-    elements.takePhotoBtn.disabled = false;
+    if (elements.takePhotoBtn) {
+        elements.takePhotoBtn.disabled = false;
+    }
+    
+    // Iniciar escaneo NFC automático
+    startNFCAutoScan();
     
     console.log('👤 UI actualizada para usuario autenticado');
 }
@@ -2513,9 +2633,11 @@ function updateUIForUnauthenticatedUser() {
     // Ocultar indicador de usuario
     elements.userIndicator.style.display = 'none';
     
-    // Deshabilitar botones de acción
-    elements.scanQRBtn.disabled = true;
-    elements.takePhotoBtn.disabled = true;
+    // Deshabilitar botones de acción y detener NFC
+    stopNFCScanning();
+    if (elements.takePhotoBtn) {
+        elements.takePhotoBtn.disabled = true;
+    }
     
     console.log('🚫 UI actualizada para usuario no autenticado');
 }
@@ -2662,6 +2784,12 @@ async function selectTask(selectedTask) {
             currentPhotoData = null;
             currentQRData = null;
             elements.photoPreview.style.display = 'none';
+            
+            // Ocultar botón de enviar incidencia
+            if (elements.sendIncidenceBtn) {
+                elements.sendIncidenceBtn.style.display = 'none';
+            }
+            
             elements.qrResults.style.display = 'none';
             
             // Mostrar imagen por defecto nuevamente
