@@ -545,13 +545,15 @@ def send_incidence_to_server_with_session(incidence_payload, gtask_auth):
             try:
                 img_data = img.get('file', '')
                 img_name = img.get('name', 'image.jpg')
+                file_id = img.get('file_id', '')
                 
                 # Si ya es una URL, usarla directamente
                 if isinstance(img_data, str) and (img_data.startswith('http://') or img_data.startswith('https://')):
                     print(f"✅ Imagen ya es URL: {img_name}")
                     images_with_urls.append({
                         'file': img_data,
-                        'name': img_name
+                        'name': img_name,
+                        'file_id': file_id
                     })
                 elif isinstance(img_data, str) and img_data.startswith('data:image'):
                     # Extraer el base64 del data URL
@@ -1137,6 +1139,130 @@ def get_tasks_by_qr():
         
     except Exception as e:
         return jsonify({'error': f'Error interno: {str(e)}'}), 500
+
+@app.route('/api/convert-photo-to-url', methods=['POST'])
+def convert_photo_to_url():
+    """
+    Convierte una foto base64 a URL inmediatamente al subirla
+    Retorna la URL y el file_id para poder hacer rollback si es necesario
+    """
+    try:
+        if not request.is_json:
+            return jsonify({'success': False, 'error': 'Se requiere JSON'}), 400
+        
+        data = request.get_json()
+        image_data = data.get('image')
+        filename = data.get('filename', f'photo_{datetime.now().strftime("%Y%m%d_%H%M%S")}.jpg')
+        
+        if not image_data:
+            return jsonify({'success': False, 'error': 'No se proporcionó imagen'}), 400
+        
+        # Normalizar base64 usando la función helper
+        base64_data = clean_and_validate_base64(image_data)
+        
+        # Convertir a URL
+        url, file_id = convert_base64_to_url(base64_data, filename)
+        
+        return jsonify({
+            'success': True,
+            'url': url,
+            'file_id': file_id,
+            'filename': filename
+        })
+        
+    except Exception as e:
+        import traceback
+        print(f"❌ Error al convertir foto a URL: {str(e)}")
+        print(traceback.format_exc())
+        return jsonify({
+            'success': False,
+            'error': f'Error al convertir foto a URL: {str(e)}'
+        }), 500
+
+@app.route('/api/delete-photo-url', methods=['POST'])
+def delete_photo_url():
+    """
+    Elimina una foto del servidor usando el file_id (rollback)
+    Nota: El servicio de Malla puede no tener endpoint de delete, pero lo intentamos
+    """
+    try:
+        if not request.is_json:
+            return jsonify({'success': False, 'error': 'Se requiere JSON'}), 400
+        
+        data = request.get_json()
+        file_id = data.get('file_id')
+        url = data.get('url')  # URL opcional para logging
+        
+        if not file_id:
+            return jsonify({'success': False, 'error': 'No se proporcionó file_id'}), 400
+        
+        print(f"🗑️ Rollback: Eliminando foto con ID: {file_id}")
+        if url:
+            print(f"🗑️ URL de la foto: {url}")
+        
+        # URL del servicio de eliminación
+        delete_url = 'https://base64-api.deploy.malla.es/delete'
+        
+        # Preparar el payload con el file_id
+        payload = {
+            '_id': file_id
+        }
+        
+        # Hacer la petición DELETE con reintentos
+        max_retries = 3
+        retry_delay = 5  # segundos
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.delete(
+                    delete_url,
+                    json=payload,
+                    timeout=30,
+                    headers={'Content-Type': 'application/json'}
+                )
+                
+                if response.status_code == 200 or response.status_code == 204:
+                    print(f"✅ Foto eliminada exitosamente del servidor (ID: {file_id})")
+                    return jsonify({
+                        'success': True,
+                        'message': 'Foto eliminada exitosamente del servidor'
+                    })
+                elif response.status_code == 404:
+                    # La foto ya no existe, considerar como éxito
+                    print(f"⚠️ Foto no encontrada en el servidor (ID: {file_id}) - ya eliminada")
+                    return jsonify({
+                        'success': True,
+                        'message': 'Foto no encontrada (ya eliminada)'
+                    })
+                else:
+                    error_msg = f'Request failed with status code {response.status_code}'
+                    print(f"⚠️ Error al eliminar foto (intento {attempt + 1}/{max_retries}): {error_msg}")
+                    if attempt < max_retries - 1:
+                        import time
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        raise Exception(f'Error al eliminar el archivo después de {max_retries} intentos: {error_msg}')
+                
+            except requests.exceptions.RequestException as e:
+                print(f"⚠️ Error en intento {attempt + 1}/{max_retries}: {str(e)}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(retry_delay)
+                else:
+                    error_msg = f'Error al eliminar foto después de {max_retries} intentos: {str(e)}'
+                    print(f"❌ {error_msg}")
+                    raise Exception(error_msg)
+        
+        # Si llegamos aquí, algo salió mal
+        raise Exception('Error al eliminar foto: se agotaron los intentos')
+        
+    except Exception as e:
+        print(f"❌ Error al eliminar foto (rollback): {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': f'Error al eliminar foto: {str(e)}'
+        }), 500
 
 @app.route('/api/process-photo-with-task', methods=['POST'])
 def process_photo_with_task():

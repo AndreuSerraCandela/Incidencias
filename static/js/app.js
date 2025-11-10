@@ -729,13 +729,59 @@ function capturePhoto() {
             imagenia = imageData;
             currentPhotoData = imageData; // Mantener para compatibilidad
             
+            // Normalizar imagenia a objeto si es necesario
+            const imageniaObj = typeof imageData === 'string' ? {
+                base64: imageData,
+                url: null,
+                file_id: null,
+                filename: `main_photo_${Date.now()}.jpg`,
+                converted: false
+            } : imageData;
+            
             // Limpiar solo las fotos adicionales (mantener fotos adicionales existentes)
             // La galería mostrará: imagenia + fotos adicionales
-            const hadAdditionalPhotos = photoGallery.length > 0 && photoGallery[0] !== imagenia;
+            const hadAdditionalPhotos = photoGallery.length > 0 && 
+                (typeof photoGallery[0] === 'string' ? photoGallery[0] !== imagenia : 
+                 (typeof photoGallery[0] === 'object' ? photoGallery[0].base64 !== imagenia : true));
             const additionalPhotos = hadAdditionalPhotos ? photoGallery.slice(1) : [];
             
             // Establecer nueva galería: imagenia + fotos adicionales existentes
-            photoGallery = [imageData, ...additionalPhotos];
+            photoGallery = [imageniaObj, ...additionalPhotos];
+            
+            // Generar URL para imagenia en segundo plano (sin añadir a la galería, ya está añadida)
+            (async () => {
+                try {
+                    console.log('🔄 Convirtiendo imagenia a URL...');
+                    const response = await fetch('/api/convert-photo-to-url', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Device-ID': deviceId
+                        },
+                        body: JSON.stringify({
+                            image: imageniaObj.base64,
+                            filename: imageniaObj.filename
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        // Actualizar el objeto con la URL generada
+                        if (photoGallery[0] === imageniaObj) {
+                            photoGallery[0].url = result.url;
+                            photoGallery[0].file_id = result.file_id;
+                            photoGallery[0].converted = true;
+                            console.log(`✅ URL generada para imagenia: ${result.url.substring(0, 50)}...`);
+                            updatePhotoGallery();
+                        }
+                    } else {
+                        console.error('❌ Error al generar URL para imagenia:', result.error);
+                    }
+                } catch (error) {
+                    console.error('❌ Error al convertir imagenia a URL:', error);
+                }
+            })();
             
             console.log('📸 Imagenia capturada (para IA):', imageData.substring(0, 100) + '...'); // Debug
         } else if (photoMode === 'añadir') {
@@ -746,7 +792,53 @@ function capturePhoto() {
             // Modo no definido: por defecto, establecer como imagenia
             imagenia = imageData;
             currentPhotoData = imageData;
-            photoGallery = [imageData];
+            
+            // Normalizar a objeto
+            const imageniaObj = typeof imageData === 'string' ? {
+                base64: imageData,
+                url: null,
+                file_id: null,
+                filename: `main_photo_${Date.now()}.jpg`,
+                converted: false
+            } : imageData;
+            
+            photoGallery = [imageniaObj];
+            
+            // Generar URL en segundo plano (sin añadir a la galería, ya está añadida)
+            (async () => {
+                try {
+                    console.log('🔄 Convirtiendo foto a URL...');
+                    const response = await fetch('/api/convert-photo-to-url', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-Device-ID': deviceId
+                        },
+                        body: JSON.stringify({
+                            image: imageniaObj.base64,
+                            filename: imageniaObj.filename
+                        })
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        // Actualizar el objeto con la URL generada
+                        if (photoGallery[0] === imageniaObj) {
+                            photoGallery[0].url = result.url;
+                            photoGallery[0].file_id = result.file_id;
+                            photoGallery[0].converted = true;
+                            console.log(`✅ URL generada para foto: ${result.url.substring(0, 50)}...`);
+                            updatePhotoGallery();
+                        }
+                    } else {
+                        console.error('❌ Error al generar URL para foto:', result.error);
+                    }
+                } catch (error) {
+                    console.error('❌ Error al convertir foto a URL:', error);
+                }
+            })();
+            
             console.log('📸 Foto capturada (modo por defecto):', imageData.substring(0, 100) + '...'); // Debug
         }
         
@@ -849,19 +941,115 @@ function handlePhotoImport(event) {
                     if (photoMode === 'reportar') {
                         console.log('📸 Imagenia importada desde Reportar Incidencia');
                         
+                        // Normalizar imagenia a objeto si es necesario
+                        const imageniaObj = typeof imagenia === 'string' ? {
+                            base64: imagenia,
+                            url: null,
+                            file_id: null,
+                            filename: `main_photo_${Date.now()}.jpg`,
+                            converted: false
+                        } : imagenia;
+                        
                         // Limpiar solo las fotos adicionales (mantener fotos adicionales existentes)
                         // La galería mostrará: imagenia + fotos adicionales
-                        const hadAdditionalPhotos = photoGallery.length > 0 && photoGallery[0] !== imagenia;
+                        const hadAdditionalPhotos = photoGallery.length > 0 && 
+                            (typeof photoGallery[0] === 'string' ? photoGallery[0] !== imagenia : 
+                             (typeof photoGallery[0] === 'object' ? photoGallery[0].base64 !== imagenia : true));
                         const additionalPhotos = hadAdditionalPhotos ? photoGallery.slice(1) : [];
                         
                         // Establecer nueva galería: imagenia + fotos adicionales existentes
-                        photoGallery = [imagenia, ...additionalPhotos];
+                        photoGallery = [imageniaObj, ...additionalPhotos];
+                        
+                        // Generar URL para imagenia en segundo plano
+                        (async () => {
+                            try {
+                                console.log('🔄 Convirtiendo imagenia importada a URL...');
+                                const response = await fetch('/api/convert-photo-to-url', {
+                                    method: 'POST',
+                                    headers: {
+                                        'Content-Type': 'application/json',
+                                        'X-Device-ID': deviceId
+                                    },
+                                    body: JSON.stringify({
+                                        image: imageniaObj.base64,
+                                        filename: imageniaObj.filename
+                                    })
+                                });
+                                
+                                const result = await response.json();
+                                
+                                if (result.success) {
+                                    // Actualizar el objeto con la URL generada
+                                    if (photoGallery[0] === imageniaObj) {
+                                        photoGallery[0].url = result.url;
+                                        photoGallery[0].file_id = result.file_id;
+                                        photoGallery[0].converted = true;
+                                        console.log(`✅ URL generada para imagenia importada: ${result.url.substring(0, 50)}...`);
+                                        updatePhotoGallery();
+                                    }
+                                } else {
+                                    console.error('❌ Error al generar URL para imagenia importada:', result.error);
+                                }
+                            } catch (error) {
+                                console.error('❌ Error al convertir imagenia importada a URL:', error);
+                            }
+                        })();
                     } else if (photoMode === 'añadir') {
                         console.log('📸 Fotos adicionales importadas desde Añadir Fotos');
                     } else {
                         console.log('📸 Fotos importadas (modo por defecto)');
-                        if (imagenia && photoGallery.length > 0 && photoGallery[0] !== imagenia) {
-                            photoGallery = [imagenia, ...photoGallery];
+                        if (imagenia) {
+                            // Normalizar imagenia a objeto si es necesario
+                            const imageniaObj = typeof imagenia === 'string' ? {
+                                base64: imagenia,
+                                url: null,
+                                file_id: null,
+                                filename: `main_photo_${Date.now()}.jpg`,
+                                converted: false
+                            } : imagenia;
+                            
+                            if (photoGallery.length > 0 && 
+                                (typeof photoGallery[0] === 'string' ? photoGallery[0] !== imagenia : 
+                                 (typeof photoGallery[0] === 'object' ? photoGallery[0].base64 !== imagenia : true))) {
+                                photoGallery = [imageniaObj, ...photoGallery];
+                            } else if (photoGallery.length === 0) {
+                                photoGallery = [imageniaObj];
+                            }
+                            
+                            // Generar URL para imagenia en segundo plano
+                            (async () => {
+                                try {
+                                    console.log('🔄 Convirtiendo imagenia importada a URL...');
+                                    const response = await fetch('/api/convert-photo-to-url', {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            'X-Device-ID': deviceId
+                                        },
+                                        body: JSON.stringify({
+                                            image: imageniaObj.base64,
+                                            filename: imageniaObj.filename
+                                        })
+                                    });
+                                    
+                                    const result = await response.json();
+                                    
+                                    if (result.success) {
+                                        // Actualizar el objeto con la URL generada
+                                        if (photoGallery[0] === imageniaObj) {
+                                            photoGallery[0].url = result.url;
+                                            photoGallery[0].file_id = result.file_id;
+                                            photoGallery[0].converted = true;
+                                            console.log(`✅ URL generada para imagenia importada: ${result.url.substring(0, 50)}...`);
+                                            updatePhotoGallery();
+                                        }
+                                    } else {
+                                        console.error('❌ Error al generar URL para imagenia importada:', result.error);
+                                    }
+                                } catch (error) {
+                                    console.error('❌ Error al convertir imagenia importada a URL:', error);
+                                }
+                            })();
                         }
                     }
                     
@@ -1015,10 +1203,85 @@ function handleMultiplePhotos(event) {
     }
 }
 
-// Añadir una foto a la galería
-function addPhotoToGallery(imageData) {
-    photoGallery.push(imageData);
-    console.log(`📸 Foto añadida. Total: ${photoGallery.length}`);
+// Añadir una foto a la galería y generar URL inmediatamente
+async function addPhotoToGallery(imageData) {
+    try {
+        // Normalizar: si es string, crear objeto; si ya es objeto, usarlo
+        let photoObj;
+        if (typeof imageData === 'string') {
+            photoObj = {
+                base64: imageData,
+                url: null,
+                file_id: null,
+                filename: `photo_${Date.now()}_${photoGallery.length + 1}.jpg`,
+                converted: false
+            };
+        } else {
+            // Ya es objeto, usar directamente
+            photoObj = imageData;
+        }
+        
+        // Añadir a la galería primero (para mostrar inmediatamente)
+        photoGallery.push(photoObj);
+        console.log(`📸 Foto añadida. Total: ${photoGallery.length}`);
+        
+        // Actualizar visualización inmediatamente
+        updatePhotoGallery();
+        
+        // Convertir a URL en segundo plano (no bloquea la UI)
+        console.log('🔄 Convirtiendo foto a URL...');
+        try {
+            const response = await fetch('/api/convert-photo-to-url', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Device-ID': deviceId
+                },
+                body: JSON.stringify({
+                    image: photoObj.base64,
+                    filename: photoObj.filename
+                })
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                // Actualizar el objeto con la URL generada
+                const index = photoGallery.length - 1;
+                if (photoGallery[index] === photoObj) {
+                    photoGallery[index].url = result.url;
+                    photoGallery[index].file_id = result.file_id;
+                    photoGallery[index].converted = true;
+                    console.log(`✅ URL generada para foto ${index + 1}: ${result.url.substring(0, 50)}...`);
+                    
+                    // Actualizar visualización para mostrar el indicador de URL generada
+                    updatePhotoGallery();
+                }
+            } else {
+                console.error('❌ Error al generar URL:', result.error);
+                // Marcar como no convertida pero mantener en la galería
+                const index = photoGallery.length - 1;
+                if (photoGallery[index] === photoObj) {
+                    photoGallery[index].converted = false;
+                }
+            }
+        } catch (error) {
+            console.error('❌ Error al convertir foto a URL:', error);
+            // Si falla, mantener la foto con base64 para convertirla después
+            const index = photoGallery.length - 1;
+            if (photoGallery[index] === photoObj) {
+                photoGallery[index].converted = false;
+            }
+        }
+        
+    } catch (error) {
+        console.error('❌ Error al añadir foto a galería:', error);
+        // Si falla completamente, añadir como string para compatibilidad
+        if (typeof imageData === 'string') {
+            photoGallery.push(imageData);
+        }
+        updatePhotoGallery();
+    }
 }
 
 // Actualizar la visualización de la galería
@@ -1030,10 +1293,30 @@ function updatePhotoGallery() {
     // Limpiar la galería
     elements.photoGallery.innerHTML = '';
     
-    // Si hay imagenia, debe estar al inicio de la galería
-    // Asegurarse de que imagenia esté en la galería si existe
-    if (imagenia && (photoGallery.length === 0 || photoGallery[0] !== imagenia)) {
-        photoGallery.unshift(imagenia);
+    // Normalizar imagenia si es necesario
+    if (imagenia && typeof imagenia === 'string') {
+        // Convertir imagenia a objeto si es necesario
+        const imageniaObj = {
+            base64: imagenia,
+            url: null,
+            file_id: null,
+            filename: `main_photo_${Date.now()}.jpg`,
+            converted: false
+        };
+        
+        // Si imagenia no está en la galería o está como string, normalizarla
+        if (photoGallery.length === 0 || 
+            (typeof photoGallery[0] === 'string' && photoGallery[0] === imagenia) ||
+            (typeof photoGallery[0] === 'object' && photoGallery[0].base64 !== imagenia)) {
+            photoGallery.unshift(imageniaObj);
+        } else if (typeof photoGallery[0] === 'object' && photoGallery[0].base64 === imagenia) {
+            // Ya está normalizada, no hacer nada
+        }
+    } else if (imagenia && typeof imagenia === 'object') {
+        // imagenia ya es objeto, asegurarse de que esté al inicio
+        if (photoGallery.length === 0 || photoGallery[0] !== imagenia) {
+            photoGallery.unshift(imagenia);
+        }
     }
     
     if (photoGallery.length === 0) {
@@ -1041,13 +1324,15 @@ function updatePhotoGallery() {
     }
     
     // Crear elementos para cada foto
-    photoGallery.forEach((imageData, index) => {
+    photoGallery.forEach((photoItem, index) => {
         const galleryItem = document.createElement('div');
         galleryItem.className = 'photo-gallery-item';
         galleryItem.dataset.index = index;
         
         const img = document.createElement('img');
-        img.src = imageData;
+        // Usar base64 para mostrar (más rápido que cargar desde URL)
+        const imageSrc = typeof photoItem === 'string' ? photoItem : photoItem.base64;
+        img.src = imageSrc;
         img.alt = `Foto ${index + 1}`;
         
         const removeBtn = document.createElement('button');
@@ -1058,6 +1343,24 @@ function updatePhotoGallery() {
         
         galleryItem.appendChild(img);
         galleryItem.appendChild(removeBtn);
+        
+        // Indicador de estado de conversión (URL generada)
+        if (typeof photoItem === 'object' && photoItem.converted && photoItem.url) {
+            const statusBadge = document.createElement('div');
+            statusBadge.className = 'url-status-badge';
+            statusBadge.textContent = '✓';
+            statusBadge.title = 'URL generada - Lista para enviar';
+            statusBadge.style.cssText = 'position: absolute; top: 5px; right: 5px; background: #4CAF50; color: white; border-radius: 50%; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; z-index: 10;';
+            galleryItem.appendChild(statusBadge);
+        } else if (typeof photoItem === 'object' && !photoItem.converted) {
+            // Mostrar indicador de "convirtiendo..."
+            const statusBadge = document.createElement('div');
+            statusBadge.className = 'url-status-badge';
+            statusBadge.textContent = '⏳';
+            statusBadge.title = 'Generando URL...';
+            statusBadge.style.cssText = 'position: absolute; top: 5px; right: 5px; background: #FF9800; color: white; border-radius: 50%; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; z-index: 10;';
+            galleryItem.appendChild(statusBadge);
+        }
         
         // Añadir indicador "AI" a la primera foto (imagenia)
         if (index === 0 && imagenia) {
@@ -1118,10 +1421,40 @@ function navigateGallery(direction) {
     }
 }
 
-// Eliminar una foto de la galería
-function removePhotoFromGallery(index) {
+// Eliminar una foto de la galería (con rollback si tiene URL generada)
+async function removePhotoFromGallery(index) {
     if (index < 0 || index >= photoGallery.length) {
         return;
+    }
+    
+    const photoObj = photoGallery[index];
+    
+    // Si tiene URL generada, hacer rollback (eliminarla del servidor)
+    if (typeof photoObj === 'object' && photoObj.file_id) {
+        try {
+            console.log(`🗑️ Eliminando foto del servidor (rollback): ${photoObj.file_id}`);
+            const response = await fetch('/api/delete-photo-url', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Device-ID': deviceId
+                },
+                body: JSON.stringify({
+                    file_id: photoObj.file_id,
+                    url: photoObj.url
+                })
+            });
+            
+            const result = await response.json();
+            if (result.success) {
+                console.log('✅ Rollback de foto completado');
+            } else {
+                console.warn('⚠️ Error en rollback de foto:', result.error);
+            }
+        } catch (error) {
+            console.error('⚠️ Error al eliminar foto del servidor (rollback):', error);
+            // Continuar aunque falle el rollback
+        }
     }
     
     photoGallery.splice(index, 1);
@@ -1264,13 +1597,28 @@ async function uploadPhoto() {
         // Crear payload de la incidencia con foto
         let incidencePayload;
         
-        // Componer imágenes: usar todas las fotos de la galería
-        const images = photosToSend.map((photoData, index) => ({
-            file: photoData,
-            name: hasQRData 
-                ? `incidencia_qr_${Date.now()}_${index + 1}.jpg`
-                : `incidencia_parada_${pendingIncidenceData.stopNumber}_${Date.now()}_${index + 1}.jpg`
-        }));
+        // Componer imágenes: usar URLs ya generadas si existen, sino usar base64 (fallback)
+        const images = photosToSend.map((photoObj, index) => {
+            // Si es objeto con URL, usar la URL; si no, usar base64 (fallback)
+            if (typeof photoObj === 'object' && photoObj.url) {
+                return {
+                    file: photoObj.url, // Ya es URL, no necesita conversión
+                    name: photoObj.filename || (hasQRData 
+                        ? `incidencia_qr_${Date.now()}_${index + 1}.jpg`
+                        : `incidencia_parada_${pendingIncidenceData.stopNumber}_${Date.now()}_${index + 1}.jpg`),
+                    file_id: photoObj.file_id // Preservar file_id para rollback
+                };
+            } else {
+                // Fallback: usar base64 (se convertirá en el backend)
+                const base64Data = typeof photoObj === 'string' ? photoObj : photoObj.base64;
+                return {
+                    file: base64Data,
+                    name: (typeof photoObj === 'object' && photoObj.filename) ? photoObj.filename : (hasQRData 
+                        ? `incidencia_qr_${Date.now()}_${index + 1}.jpg`
+                        : `incidencia_parada_${pendingIncidenceData.stopNumber}_${Date.now()}_${index + 1}.jpg`)
+                };
+            }
+        });
         
         if (hasQRData) {
             // Usar datos de QR
@@ -1521,11 +1869,24 @@ async function confirmAIResults() {
         // Obtener todas las fotos de la galería
         const photosToSend = photoGallery.length > 0 ? photoGallery : (currentPhotoData ? [currentPhotoData] : []);
         
-        // Componer imágenes: usar todas las fotos de la galería
-        const images = photosToSend.map((photoData, index) => ({
-            file: photoData,
-            name: `incidencia_parada_${pendingIncidenceData.stopNumber}_${Date.now()}_${index + 1}.jpg`
-        }));
+        // Componer imágenes: usar URLs ya generadas si existen, sino usar base64 (fallback)
+        const images = photosToSend.map((photoObj, index) => {
+            // Si es objeto con URL, usar la URL; si no, usar base64 (fallback)
+            if (typeof photoObj === 'object' && photoObj.url) {
+                return {
+                    file: photoObj.url, // Ya es URL, no necesita conversión
+                    name: photoObj.filename || `incidencia_parada_${pendingIncidenceData.stopNumber}_${Date.now()}_${index + 1}.jpg`,
+                    file_id: photoObj.file_id // Preservar file_id para rollback
+                };
+            } else {
+                // Fallback: usar base64 (se convertirá en el backend)
+                const base64Data = typeof photoObj === 'string' ? photoObj : photoObj.base64;
+                return {
+                    file: base64Data,
+                    name: (typeof photoObj === 'object' && photoObj.filename) ? photoObj.filename : `incidencia_parada_${pendingIncidenceData.stopNumber}_${Date.now()}_${index + 1}.jpg`
+                };
+            }
+        });
         
         // Crear payload de la incidencia
         const incidencePayload = {
@@ -2430,10 +2791,57 @@ function showAudioResults(transcribedText, stopNumber, description) {
 }
 
 // Función helper para enviar incidencias en segundo plano (no bloquea la UI)
+// Función para hacer rollback de fotos (eliminar URLs del servidor)
+async function rollbackPhotos(fileIds) {
+    if (!fileIds || fileIds.length === 0) {
+        return;
+    }
+    
+    console.log(`🗑️ Iniciando rollback de ${fileIds.length} foto(s)...`);
+    
+    // Hacer rollback de todas las fotos en paralelo
+    const rollbackPromises = fileIds.map(async (fileId) => {
+        try {
+            const response = await fetch('/api/delete-photo-url', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Device-ID': deviceId
+                },
+                body: JSON.stringify({
+                    file_id: fileId
+                })
+            });
+            
+            const result = await response.json();
+            if (result.success) {
+                console.log(`✅ Rollback completado para foto: ${fileId}`);
+            } else {
+                console.warn(`⚠️ Error en rollback para foto ${fileId}:`, result.error);
+            }
+        } catch (error) {
+            console.error(`❌ Error al hacer rollback de foto ${fileId}:`, error);
+        }
+    });
+    
+    await Promise.all(rollbackPromises);
+    console.log('✅ Rollback de fotos completado');
+}
+
 function sendIncidenceInBackground(payload, successMessage, errorMessage, onSuccess, onError) {
     // Mostrar mensaje de envío inmediatamente
     if (successMessage) {
         showStatus(successMessage.replace('enviada', 'enviando...').replace('creada', 'creando...'), 'info');
+    }
+    
+    // Extraer file_ids de las imágenes para rollback si falla
+    const fileIds = [];
+    if (payload.image && Array.isArray(payload.image)) {
+        payload.image.forEach(img => {
+            if (img.file_id) {
+                fileIds.push(img.file_id);
+            }
+        });
     }
     
     // Ejecutar fetch en segundo plano sin bloquear la UI
@@ -2467,6 +2875,14 @@ function sendIncidenceInBackground(payload, successMessage, errorMessage, onSucc
             showStatus(errorMsg, 'error');
             console.error('❌ Error al enviar incidencia:', result);
             
+            // Hacer rollback de fotos si hay error
+            if (fileIds.length > 0) {
+                console.log('🔄 Haciendo rollback de fotos debido a error...');
+                rollbackPhotos(fileIds).catch(err => {
+                    console.error('❌ Error al hacer rollback de fotos:', err);
+                });
+            }
+            
             // Ejecutar callback de error si existe
             if (onError && typeof onError === 'function') {
                 onError(result);
@@ -2477,6 +2893,14 @@ function sendIncidenceInBackground(payload, successMessage, errorMessage, onSucc
         const errorMsg = errorMessage || 'Error al enviar incidencia: ' + error.message;
         showStatus(errorMsg, 'error');
         console.error('❌ Error al enviar incidencia:', error);
+        
+        // Hacer rollback de fotos si hay error
+        if (fileIds.length > 0) {
+            console.log('🔄 Haciendo rollback de fotos debido a error...');
+            rollbackPhotos(fileIds).catch(err => {
+                console.error('❌ Error al hacer rollback de fotos:', err);
+            });
+        }
         
         // Ejecutar callback de error si existe
         if (onError && typeof onError === 'function') {
@@ -2870,11 +3294,24 @@ async function sendIncidenceFromPreview() {
             return;
         }
 
-        // Componer imágenes: usar todas las fotos de la galería
-        const images = photosToSend.map((photoData, index) => ({
-            file: photoData,
-            name: `incidence_${index + 1}.jpg`
-        }));
+        // Componer imágenes: usar URLs ya generadas si existen, sino usar base64 (fallback)
+        const images = photosToSend.map((photoObj, index) => {
+            // Si es objeto con URL, usar la URL; si no, usar base64 (fallback)
+            if (typeof photoObj === 'object' && photoObj.url) {
+                return {
+                    file: photoObj.url, // Ya es URL, no necesita conversión
+                    name: photoObj.filename || `incidence_${index + 1}.jpg`,
+                    file_id: photoObj.file_id // Preservar file_id para rollback
+                };
+            } else {
+                // Fallback: usar base64 (se convertirá en el backend)
+                const base64Data = typeof photoObj === 'string' ? photoObj : photoObj.base64;
+                return {
+                    file: base64Data,
+                    name: (typeof photoObj === 'object' && photoObj.filename) ? photoObj.filename : `incidence_${index + 1}.jpg`
+                };
+            }
+        });
 
         // Usar recurso del audio/IA si está disponible, sino del QR
         let resource;
