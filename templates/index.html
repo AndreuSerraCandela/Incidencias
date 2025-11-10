@@ -25,7 +25,7 @@
     <link rel="apple-touch-icon" sizes="60x60" href="/static/icons/icon-60x60.png">
     <link rel="apple-touch-icon" sizes="57x57" href="/static/icons/icon-57x57.png">
     
-    <title>App de Incidencias Paradas de Bus - Móvil</title>
+    <title>Incidencias Malla - Gestión de Incidencias</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 </head>
@@ -63,18 +63,15 @@
             <h1 style="display:inline-flex; align-items:center; gap:0px;">
                 <img src="{{ url_for('static', filename='icons/icon-32x32.png') }}" 
                      alt="icon" style="width:40px; height:40px;">
-                Incidencias Paradas de Bus
+                Incidencias Malla
             </h1>
             <p class="subtitle">Reporta incidencias en paradas de bus con audio y fotos</p>
             
-            <!-- Indicador de usuario -->
-            <div id="userIndicator" class="user-indicator" style="display: none;">
+            <!-- Icono de usuario en la esquina superior derecha -->
+            <button id="userIconBtn" class="user-icon-btn" title="Usuario">
                 <i class="fas fa-user"></i>
-                <span id="currentUsername">Usuario</span>
-                <button id="logoutBtn" class="btn-logout">
-                    <i class="fas fa-sign-out-alt"></i>
-                </button>
-            </div>
+            </button>
+            
         </header>
         
         <!-- Modal de Login -->
@@ -140,10 +137,16 @@
                     <button id="recordAudioBtn" class="btn btn-secondary">
                         <i class="fas fa-microphone"></i> Grabar Audio
                     </button>
-                    <button id="takePhotoBtn" class="btn btn-success">
-                        <i class="fas fa-camera"></i> Reportar Incidencia
-                    </button>
+                    <div class="photo-buttons-column">
+                        <button id="addPhotosBtn" class="btn btn-info btn-small">
+                            <i class="fas fa-images"></i> Añadir Fotos
+                        </button>
+                        <button id="takePhotoBtn" class="btn btn-success btn-small">
+                            <i class="fas fa-camera"></i> Reportar Incidencia
+                        </button>
+                    </div>
                 </div>
+                <input type="file" id="multiplePhotosInput" accept="image/*" multiple style="display: none;">
                 <button id="sendIncidenceBtn" class="btn btn-send-incidence" style="display: none;">
                     <i class="fas fa-exclamation-triangle"></i> Enviar Incidencia
                 </button>
@@ -158,8 +161,19 @@
         <!-- Vista previa de la incidencia -->
         <div id="photoPreview" class="photo-section" style="display: none;">
             <h3><i class="fas fa-exclamation-triangle"></i> Vista Previa de la Incidencia</h3>
-            <div class="photo-container">
-                <img id="previewImage" src="" alt="Vista previa de la incidencia" class="preview-img">
+            <div class="photo-gallery-container">
+                <div id="photoGallery" class="photo-gallery">
+                    <!-- Las fotos se añadirán aquí dinámicamente -->
+                </div>
+                <button id="prevPhotoBtn" class="gallery-nav-btn gallery-nav-prev" style="display: none;">
+                    <i class="fas fa-chevron-left"></i>
+                </button>
+                <button id="nextPhotoBtn" class="gallery-nav-btn gallery-nav-next" style="display: none;">
+                    <i class="fas fa-chevron-right"></i>
+                </button>
+            </div>
+            <div class="photo-counter">
+                <span id="photoCount">0</span> foto(s) añadida(s)
             </div>
             <p class="upload-info">
                 <i class="fas fa-info-circle"></i> 
@@ -238,7 +252,7 @@
                     
                     <!-- Instrucciones para el usuario -->
                     <div class="photo-instructions">
-                        <p><i class="fas fa-info-circle"></i> Encuadra la imagen que quieres fotografiar</p>
+                        <p><i class="fas fa-info-circle"></i> Encuadra la imagen</p>
                         <p><i class="fas fa-lightbulb"></i> Toca "Capturar Foto" cuando esté listo</p>
                     </div>
                     
@@ -250,7 +264,7 @@
                         <button id="importPhotoBtn" class="btn btn-info">
                             <i class="fas fa-upload"></i> Importar Foto
                         </button>
-                        <input type="file" id="photoFileInput" accept="image/*" style="display: none;">
+                        <input type="file" id="photoFileInput" accept="image/*" multiple style="display: none;">
                         <button id="retakePhotoBtn" class="btn btn-warning" style="display: none;">
                             <i class="fas fa-redo"></i> Volver a Tomar
                         </button>

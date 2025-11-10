@@ -29,11 +29,29 @@ from gtask_auth import GTaskAuth
 from mobile_storage import MobileStorage
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "X-Device-ID"]
+    }
+})
 
 # Configuración de sesión
 app.secret_key = 'incidencias_malla_secret_key_2024'
 app.config['SESSION_TYPE'] = 'filesystem'
+
+# Middleware para logging de todas las peticiones
+@app.before_request
+def log_request_info():
+    import sys
+    print("=" * 50)
+    print(f"🌐 Petición recibida: {request.method} {request.path}")
+    print(f"🌐 URL completa: {request.url}")
+    print(f"🌐 Headers: {dict(request.headers)}")
+    print("=" * 50)
+    sys.stdout.flush()
+    sys.stderr.flush()
 
 # ========================================
 # SISTEMA DE GESTIÓN DE SESIONES POR DISPOSITIVO
@@ -137,7 +155,7 @@ if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max
+app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max (aumentado para múltiples imágenes)
 
 def compress_image(image_bytes, quality=85, max_size_mb=10):
     """Comprime la imagen si es muy grande"""
@@ -411,10 +429,90 @@ def process_photo_async(qr_id, filename, image_base64, qr_data, device_id, selec
     except Exception as e:
         print(f"Error en proceso en segundo plano: {filename} - {str(e)}")
 
+def convert_base64_to_url(base64_data, filename):
+    """
+    Convierte un base64 a URL usando el servicio de Malla
+    Similar a la función AL FormBase64ToUrl
+    """
+    try:
+        import os
+        
+        # Extraer la extensión del archivo
+        file_ext = os.path.splitext(filename)[1].lower().lstrip('.')
+        
+        # Añadir el prefijo según el tipo de archivo
+        if file_ext in ['jpg', 'jpeg', 'png', 'bmp', 'tif', 'tiff', 'gif']:
+            base64_with_prefix = f'image/{file_ext};base64,{base64_data}'
+        else:
+            base64_with_prefix = f'application/{file_ext};base64,{base64_data}'
+        
+        # Preparar el JSON para la petición
+        payload = {
+            'base64': base64_with_prefix,
+            'filename': filename
+        }
+        
+        # URL del servicio de conversión
+        url = 'https://base64-api.deploy.malla.es/save'
+        
+        # Hacer la petición POST con reintentos
+        max_retries = 3
+        retry_delay = 5  # segundos
+        
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(
+                    url,
+                    json=payload,
+                    timeout=30,
+                    headers={'Content-Type': 'application/json'}
+                )
+                
+                if response.status_code == 400:
+                    error_msg = 'Request failed with status code 400'
+                    print(f"⚠️ Error al guardar archivo (intento {attempt + 1}/{max_retries}): {error_msg}")
+                    if attempt < max_retries - 1:
+                        import time
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        raise Exception('Error al guardar el archivo después de varios intentos')
+                
+                response.raise_for_status()
+                result = response.json()
+                
+                # Extraer la URL y el ID
+                url_result = result.get('url', '')
+                file_id = result.get('_id', None)
+                
+                print(f"✅ Archivo convertido a URL: {url_result} (ID: {file_id})")
+                return url_result, file_id
+                
+            except requests.exceptions.RequestException as e:
+                print(f"⚠️ Error en intento {attempt + 1}/{max_retries}: {str(e)}")
+                if attempt < max_retries - 1:
+                    import time
+                    time.sleep(retry_delay)
+                else:
+                    error_msg = f'Error al convertir base64 a URL después de {max_retries} intentos: {str(e)}'
+                    print(f"❌ {error_msg}")
+                    raise Exception(error_msg)
+        
+    except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"❌ Error al convertir base64 a URL: {str(e)}")
+        print(f"📋 Traceback completo:\n{error_trace}")
+        raise
+
 def send_incidence_to_server_with_session(incidence_payload, gtask_auth):
     """Envía una incidencia al servidor Business Central usando la sesión específica del dispositivo."""
+    print("=" * 50)
+    print("🟢 send_incidence_to_server_with_session() LLAMADA")
+    print(f"🟢 Payload keys: {list(incidence_payload.keys()) if incidence_payload else 'None'}")
+    print("=" * 50)
     try:
-        from config import get_bc_url, get_bc_auth_header, BC_CONFIG
+        from config import get_bc_url, get_bc_incidences_url, get_bc_auth_header, BC_CONFIG
         
         # Validar payload mínimo
         required_fields = ['state', 'incidenceType', 'description']
@@ -434,26 +532,147 @@ def send_incidence_to_server_with_session(incidence_payload, gtask_auth):
             }
 
         # URL del endpoint de incidencias en Business Central
-        base_url = BC_CONFIG['base_url']
-        incidences_endpoint = '/powerbi/ODataV4/GtaskMalla_postincidencia'
-        url = f"{base_url}{incidences_endpoint}"
+        # Intentar primero con endpoint específico de incidencias, si no existe, usar el de fijaciones
+        url = get_bc_incidences_url()  # Intenta usar GtaskMalla_PostIncidencia, si no existe usa GtaskMalla_PostFijacion
+        print(f"🟢 Usando endpoint de incidencias: {url}")
 
-        # Crear la estructura de datos para BC (como objeto, no array)
+        # Convertir imágenes base64 a URLs antes de enviar a BC
+        images = incidence_payload.get('image', [])
+        images_with_urls = []
+        
+        print(f"📸 Convirtiendo {len(images)} imagen(es) de base64 a URL...")
+        for img in images:
+            try:
+                img_data = img.get('file', '')
+                img_name = img.get('name', 'image.jpg')
+                
+                # Si ya es una URL, usarla directamente
+                if isinstance(img_data, str) and (img_data.startswith('http://') or img_data.startswith('https://')):
+                    print(f"✅ Imagen ya es URL: {img_name}")
+                    images_with_urls.append({
+                        'file': img_data,
+                        'name': img_name
+                    })
+                elif isinstance(img_data, str) and img_data.startswith('data:image'):
+                    # Extraer el base64 del data URL
+                    # Formato: data:image/jpeg;base64,/9j/4AAQ...
+                    if ',' in img_data:
+                        base64_data = img_data.split(',')[1]
+                    else:
+                        # Si no hay coma, intentar extraer después de base64,
+                        base64_data = img_data.split('base64,')[1] if 'base64,' in img_data else img_data
+                    # Convertir a URL
+                    url, file_id = convert_base64_to_url(base64_data, img_name)
+                    images_with_urls.append({
+                        'file': url,
+                        'name': img_name,
+                        'file_id': file_id
+                    })
+                elif isinstance(img_data, str):
+                    # Asumir que es base64 puro
+                    url, file_id = convert_base64_to_url(img_data, img_name)
+                    images_with_urls.append({
+                        'file': url,
+                        'name': img_name,
+                        'file_id': file_id
+                    })
+                else:
+                    print(f"⚠️ Formato de imagen no reconocido para {img_name}, enviando tal cual")
+                    images_with_urls.append(img)
+            except Exception as e:
+                import traceback
+                error_trace = traceback.format_exc()
+                print(f"❌ Error al convertir imagen {img.get('name', 'desconocida')}: {str(e)}")
+                print(f"📋 Traceback completo:\n{error_trace}")
+                # En caso de error, enviar la imagen original
+                images_with_urls.append(img)
+        
+        # Convertir audios base64 a URLs si los hay
+        audios = incidence_payload.get('audio', [])
+        audios_with_urls = []
+        
+        if audios:
+            print(f"🎤 Convirtiendo {len(audios)} audio(s) de base64 a URL...")
+            for audio in audios:
+                try:
+                    audio_data = audio.get('file', '') if isinstance(audio, dict) else audio
+                    audio_name = audio.get('name', 'audio.mp3') if isinstance(audio, dict) else 'audio.mp3'
+                    
+                    # Si ya es una URL, usarla directamente
+                    if isinstance(audio_data, str) and (audio_data.startswith('http://') or audio_data.startswith('https://')):
+                        print(f"✅ Audio ya es URL: {audio_name}")
+                        audios_with_urls.append(audio if isinstance(audio, dict) else {'file': audio_data, 'name': audio_name})
+                    elif isinstance(audio_data, str):
+                        # Si es data URL, extraer el base64
+                        if audio_data.startswith('data:audio') or audio_data.startswith('data:application'):
+                            if ',' in audio_data:
+                                base64_data = audio_data.split(',')[1]
+                            else:
+                                base64_data = audio_data.split('base64,')[1] if 'base64,' in audio_data else audio_data
+                        else:
+                            base64_data = audio_data
+                        # Convertir a URL
+                        url, file_id = convert_base64_to_url(base64_data, audio_name)
+                        audios_with_urls.append({
+                            'file': url,
+                            'name': audio_name,
+                            'file_id': file_id
+                        })
+                    else:
+                        print(f"⚠️ Formato de audio no reconocido, enviando tal cual")
+                        audios_with_urls.append(audio if isinstance(audio, dict) else {'file': audio_data, 'name': audio_name})
+                except Exception as e:
+                    print(f"❌ Error al convertir audio: {str(e)}")
+                    # En caso de error, enviar el audio original
+                    audios_with_urls.append(audio if isinstance(audio, dict) else {'file': audio_data, 'name': audio_name})
+        else:
+            audios_with_urls = audios
+        
+        # Extraer el ID del resource (ej: "PARADA_P1171" -> "P1171")
+        resource_id = incidence_payload.get('resource', '')
+        if resource_id.startswith('PARADA_'):
+            resource_id = resource_id.replace('PARADA_', '')
+        
+        # Crear documentos en el formato esperado por BC (similar a fijaciones)
+        documents = [
+        {
+                "document": {
+                    "file": img.get('file', ''),
+                    "name": img.get('name', 'image.jpg'),
+                    "file_id": img.get('file_id', '')
+                }
+            }
+            for img in images_with_urls
+        ]
+        # Crear la estructura de datos para BC en formato de fijaciones
+        # Si el endpoint de incidencias no existe, usar el formato de fijaciones
         bc_incidence_data = {
             "state": incidence_payload.get('state', 'PENDING'),
             "incidenceType": incidence_payload.get('incidenceType'),
             "observation": incidence_payload.get('observation', ''),
             "description": incidence_payload.get('description'),
             "resource": incidence_payload.get('resource'),
-            "user": user_id,
-            "image": incidence_payload.get('image', []),
-            "audio": incidence_payload.get('audio', [])
+            "image": documents,
+            "audio": audios_with_urls
         }
 
         # Envolver en el formato que espera BC
+        try:
+            json_text = json.dumps(bc_incidence_data, ensure_ascii=False)
+        except (TypeError, ValueError) as e:
+            print(f"❌ Error al serializar JSON para BC: {str(e)}")
+            # Intentar serializar sin las imágenes si hay problema
+            bc_incidence_data_safe = bc_incidence_data.copy()
+            if bc_incidence_data_safe and 'document' in bc_incidence_data_safe[0]:
+                bc_incidence_data_safe[0]['document'] = [{'document': {'url': '[imagen omitida]', 'name': 'image.jpg'}}]
+            json_text = json.dumps(bc_incidence_data_safe, ensure_ascii=False)
+            print(f"⚠️ Serializado sin imágenes para debugging")
+        
         datos = {
-            "jsonText": json.dumps(bc_incidence_data)
+            "jsonText": json_text
         }
+        
+        print(f"🟢 Formato de datos (primeros 300 chars): {json_text[:300]}...")
 
         # Parámetros para la petición (usar empresa por defecto o la del resource si está disponible)
         params = {"company": BC_CONFIG['company']}
@@ -469,22 +688,52 @@ def send_incidence_to_server_with_session(incidence_payload, gtask_auth):
         print(f"URL: {url}")
         print(f"Params: {params}")
         print(f"User ID: {user_id}")
-        print(f"Payload recibido: {json.dumps(incidence_payload, indent=2)}")
-        print(f"Datos enviados: {json.dumps(datos, indent=2)}")
+        try:
+            print(f"Payload recibido: {json.dumps(incidence_payload, indent=2)}")
+        except Exception as e:
+            print(f"⚠️ No se pudo serializar payload para logging: {str(e)}")
+            print(f"📊 Payload keys: {list(incidence_payload.keys()) if incidence_payload else 'None'}")
+        try:
+            print(f"Datos enviados (primeros 500 chars): {json.dumps(datos, indent=2)[:500]}...")
+        except Exception as e:
+            print(f"⚠️ No se pudo serializar datos para logging: {str(e)}")
         print("=============================================")
 
         # Realizar la petición POST a BC
-        response = requests.post(
-            url,
-            params=params,
-            headers=headers,
-            data=json.dumps(datos),
-            timeout=30
-        )
+        # Business Central puede requerir data=json.dumps() en lugar de json=
+        # Intentar primero con data=json.dumps() como en get_tasks_by_qr_id
+        print(f"🟢 Enviando petición POST a BC...")
+        print(f"🟢 URL completa: {url}")
+        print(f"🟢 Parámetros: {params}")
+        print(f"🟢 Headers: {headers}")
+        print(f"🟢 Datos (primeros 200 chars): {json.dumps(datos)[:200]}...")
+        url = get_bc_incidences_url()  # Intenta usar GtaskMalla_PostIncidencia, si no existe usa GtaskMalla_PostFijacion
+        print(f"🟢 Usando endpoint de incidencias: {url}")
+        try:
+            response = requests.post(
+                url,
+                params=params,
+                headers=headers,
+                data=json.dumps(datos),
+                timeout=30
+            )
+            
+            print(f"🟢 Respuesta de BC recibida:")
+            print(f"🟢 Status code: {response.status_code}")
+            print(f"🟢 Headers de respuesta: {dict(response.headers)}")
+            print(f"🟢 Respuesta completa: {response.text}")
+            import sys
+            sys.stdout.flush()
+            
+        except requests.exceptions.RequestException as e:
+            print(f"❌ Error de conexión con BC: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise
 
         # Verificar si la petición fue exitosa
         if response.status_code in (200, 201, 204):
-            print(f"✅ Incidencia enviada correctamente a BC: {response.status_code}")
+            print(f"✅ Incidencia enviada correctamente a BC: {response.text}")
             return {
                 'success': True,
                 'status_code': response.status_code,
@@ -492,7 +741,8 @@ def send_incidence_to_server_with_session(incidence_payload, gtask_auth):
             }
         else:
             print(f"❌ Error al enviar incidencia a BC. Código: {response.status_code}")
-            print(f"Respuesta: {response.text}")
+            print(f"❌ Respuesta completa: {response.text}")
+            print(f"❌ URL que falló: {url}")
             return {
                 'success': False,
                 'error': f'Error del servidor: {response.status_code}',
@@ -501,14 +751,31 @@ def send_incidence_to_server_with_session(incidence_payload, gtask_auth):
             
     except requests.exceptions.RequestException as e:
         error_msg = f'Error de conexión con Business Central: {str(e)}'
-        print(error_msg)
+        print("=" * 50)
+        print("❌❌❌ ERROR DE CONEXIÓN CON BC ❌❌❌")
+        print(f"❌ Error: {error_msg}")
+        print(f"❌ Tipo: {type(e).__name__}")
+        import traceback
+        print(f"📋 Traceback:\n{traceback.format_exc()}")
+        print("=" * 50)
+        import sys
+        sys.stdout.flush()
         return {
             'success': False,
             'error': error_msg
         }
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
         error_msg = f'Error interno al enviar incidencia a Business Central: {str(e)}'
-        print(error_msg)
+        print("=" * 50)
+        print("❌❌❌ ERROR INTERNO EN send_incidence_to_server_with_session() ❌❌❌")
+        print(f"❌ Error: {error_msg}")
+        print(f"❌ Tipo: {type(e).__name__}")
+        print(f"📋 Traceback completo:\n{error_trace}")
+        print("=" * 50)
+        import sys
+        sys.stdout.flush()
         return {
             'success': False,
             'error': error_msg
@@ -646,6 +913,7 @@ def send_to_business_central_with_session(qr_id, filename, image_base64, selecte
         try:
             # Verificar que sea base64 válido
             base64.b64decode(image_base64)
+            file_id = ''
             print(f"✅ Base64 válido - Longitud: {len(image_base64)} caracteres")
         except Exception as e:
             print(f"❌ Base64 inválido: {str(e)}")
@@ -701,7 +969,8 @@ def send_to_business_central_with_session(qr_id, filename, image_base64, selecte
         document_data = {
             "document": {
                 "url": image_base64,  # Solo el base64 puro
-                "name": filename
+                "name": filename,
+                "file_id": file_id
             }
         }
         
@@ -1064,7 +1333,17 @@ def process_image_ai():
         traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
-@app.route('/api/incidences', methods=['POST'])
+@app.route('/api/test', methods=['GET'])
+def test_endpoint():
+    """Endpoint de prueba simple"""
+    print("=" * 50)
+    print("✅ TEST ENDPOINT LLAMADO")
+    print("=" * 50)
+    import sys
+    sys.stdout.flush()
+    return jsonify({'success': True, 'message': 'Test endpoint funciona'}), 200
+
+@app.route('/api/incidences', methods=['POST', 'OPTIONS'])
 def create_incidence():
     """Crea una incidencia en el servidor GTask usando la sesión por dispositivo.
     Espera un JSON con la estructura:
@@ -1074,30 +1353,98 @@ def create_incidence():
       "observation": "...",
       "description": "...",
       "resource": "65a1b2...",
-      "image": [{"file": "data:image/...;base64,....", "name": "imagen1.jpg"}, ...]
+      "image": ["document":{"file": "data:image/...;base64,....", "name": "imagen1.jpg"}, ...]
     }
     """
+    import sys
+    print("=" * 50)
+    print("🔵 create_incidence() LLAMADA")
+    print(f"🔵 Método: {request.method}")
+    print(f"🔵 URL: {request.url}")
+    print(f"🔵 Headers: {dict(request.headers)}")
+    print("=" * 50)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    
+    # Manejar preflight de CORS
+    if request.method == 'OPTIONS':
+        print("🔵 Respondiendo a OPTIONS (preflight CORS)")
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, X-Device-ID')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        return response
+    
+    print("🔵 Procesando petición POST...")
     try:
+        print("🔵 Verificando si es JSON...")
         if not request.is_json:
+            print("❌ No es JSON")
             return jsonify({'success': False, 'error': 'Se requiere JSON en el cuerpo'}), 400
 
+        print("🔵 Obteniendo payload...")
         payload = request.get_json()
+        print(f"🔵 Payload recibido (tipo: {type(payload)})")
         
         print("=== CREANDO INCIDENCIA ===")
-        print(f"Payload recibido: {json.dumps(payload, indent=2)}")
+        try:
+            # Intentar serializar el payload para logging (puede fallar si es muy grande)
+            payload_str = json.dumps(payload, indent=2)
+            print(f"Payload recibido: {payload_str}")
+        except Exception as e:
+            print(f"⚠️ No se pudo serializar payload completo para logging: {str(e)}")
+            print(f"📊 Payload keys: {list(payload.keys()) if payload else 'None'}")
+            if payload:
+                print(f"📊 Tamaño de imágenes: {len(payload.get('image', []))} imágenes")
+                print(f"📊 Tamaño de audio: {len(payload.get('audio', []))} audios")
         print("=========================")
-
+        
+        # Validar que el payload no esté vacío
+        if not payload:
+            return jsonify({'success': False, 'error': 'El payload está vacío'}), 400
+        
         # Obtener sesión del dispositivo
-        device_session = get_current_device_session()
-        gtask_auth = device_session['gtask_auth']
-
+        try:
+            device_session = get_current_device_session()
+            if not device_session:
+                return jsonify({'success': False, 'error': 'No se pudo obtener la sesión del dispositivo'}), 500
+            gtask_auth = device_session.get('gtask_auth')
+            if not gtask_auth:
+                return jsonify({'success': False, 'error': 'No se pudo obtener la autenticación GTask'}), 500
+        except Exception as e:
+            import traceback
+            error_trace = traceback.format_exc()
+            print(f"❌ Error al obtener sesión del dispositivo: {str(e)}")
+            print(f"📋 Traceback completo:\n{error_trace}")
+            return jsonify({'success': False, 'error': f'Error al obtener sesión: {str(e)}'}), 500
+        
         # Enviar incidencia
-        result = send_incidence_to_server_with_session(payload, gtask_auth)
-
-        status = 200 if result.get('success') else 500
-        return jsonify(result), status
+        try:
+            result = send_incidence_to_server_with_session(payload, gtask_auth)
+            status = 200 if result.get('success') else 500
+            return jsonify(result), status
+        except Exception as e:
+            import traceback
+            error_trace = traceback.format_exc()
+            print("=" * 50)
+            print("❌❌❌ ERROR EN create_incidence() ❌❌❌")
+            print(f"❌ Error: {str(e)}")
+            print(f"❌ Tipo de error: {type(e).__name__}")
+            print(f"📋 Traceback completo:\n{error_trace}")
+            print("=" * 50)
+            return jsonify({'success': False, 'error': f'Error al enviar incidencia: {str(e)}'}), 500
 
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
+        print("=" * 50)
+        print("❌❌❌ ERROR GLOBAL EN create_incidence() ❌❌❌")
+        print(f"❌ Error: {str(e)}")
+        print(f"❌ Tipo de error: {type(e).__name__}")
+        print(f"📋 Traceback completo:\n{error_trace}")
+        print("=" * 50)
+        import sys
+        sys.stdout.flush()
         return jsonify({'success': False, 'error': f'Error interno: {str(e)}'}), 500
 
 @app.route('/api/test-bc-connection', methods=['GET'])
@@ -1581,7 +1928,7 @@ def extract_stop_info(text):
         "model": "local-model",  # LM Studio usa este nombre genérico
         "messages": messages,
         "temperature": 0.2,  # Temperatura más baja para respuestas más consistentes con Gemma
-        "max_tokens": 2000  # Aumentar tokens para Gemma 3 27B (modelo más grande)
+        "max_tokens": 800  # Aumentar tokens para Gemma 3 27B (modelo más grande)
     }
     
     print(f"🤖 Enviando texto a LM Studio en {lm_studio_url}...")
@@ -1594,14 +1941,14 @@ def extract_stop_info(text):
     print(f"📦 Tamaño del payload: {payload_size_mb:.2f} MB")
 
     try:
-        print(f"🚀 Enviando petición a LM Studio (timeout: 100s)...")
+        print(f"🚀 Enviando petición a LM Studio (timeout: 60s)...")
         import time
         start_time = time.time()
         
         response = requests.post(
             lm_studio_url,
             json=payload,
-            timeout=100,  # Aumentar timeout a 250s para Gemma 3 27B (modelo más grande y lento)
+            timeout=60,  # Timeout aumentado a 60s para modelos grandes que pueden tardar más
             headers={'Content-Type': 'application/json'}
         )
         
@@ -1957,7 +2304,7 @@ def process_image_with_lm_studio(image_base64):
             "model": "local-model",  # LM Studio usa este nombre genérico
             "messages": messages,
             "temperature": 0.2,  # Temperatura más baja para respuestas más consistentes con Gemma
-            "max_tokens": 2000  # Aumentar tokens para Gemma 3 27B (modelo más grande)
+            "max_tokens": 800  # Aumentar tokens para Gemma 3 27B (modelo más grande)
         }
         
         print(f"🤖 Enviando imagen a LM Studio en {lm_studio_url}...")
@@ -1978,14 +2325,14 @@ def process_image_with_lm_studio(image_base64):
         
         # Intentar con formato multimodal primero
         try:
-            print(f"🚀 Enviando petición a LM Studio (timeout: 100s)...")
+            print(f"🚀 Enviando petición a LM Studio (timeout: 180s)...")
             import time
             start_time = time.time()
             
             response = requests.post(
                 lm_studio_url,
                 json=payload,
-                timeout=100,  # Aumentar timeout a 250s para Gemma 3 27B (modelo más grande y lento)
+                timeout=180,  # Timeout aumentado a 180s para modelos grandes que pueden tardar más
                 headers={'Content-Type': 'application/json'}
             )
             
@@ -2285,12 +2632,13 @@ def process_image_with_lm_studio(image_base64):
                         stop_number = stop_number.replace(' ', '')
                         print(f"✅ Número de parada encontrado en JSON: {stop_number}")
                     else:
-                        # Intentar buscar directamente en el texto usando extract_stop_info
-                        print("🔍 Buscando con extract_stop_info...")
-                        stop_info = extract_stop_info(content)
-                        stop_number = stop_info.get('stop_number')
-                        if stop_number:
-                            print(f"✅ Número de parada encontrado: {stop_number}")
+                        # Intentar buscar directamente en el texto con regex (sin volver a enviar a IA)
+                        print("🔍 Buscando número de parada en el texto con regex...")
+                        # Buscar código de parada con formato P seguido de números
+                        stop_match_regex = re.search(r'\bP\s*\d{3,}\b', content, re.IGNORECASE)
+                        if stop_match_regex:
+                            stop_number = stop_match_regex.group(0).replace(' ', '').upper()
+                            print(f"✅ Número de parada encontrado con regex: {stop_number}")
                         else:
                             print("⚠️ No se encontró número de parada")
                 
@@ -2311,11 +2659,17 @@ def process_image_with_lm_studio(image_base64):
                             description = re.sub(r'\s+', ' ', description).strip()
                             print(f"✅ Descripción encontrada en JSON multilínea: {description}")
                         else:
-                            # Si no se encuentra en JSON, usar la extracción del texto
+                            # Si no se encuentra en JSON, usar el texto completo como descripción (sin volver a enviar a IA)
                             if not stop_number:
-                                stop_info = extract_stop_info(content)
-                                description = stop_info.get('description', content)
-                                print(f"✅ Descripción extraída del texto: {description}")
+                                # Usar el texto completo como descripción, limpiando campos JSON no deseados
+                                description = content
+                                # Remover campos JSON no deseados
+                                description = re.sub(r'"(?:Numero de parada|numero de parada|stop_number)"\s*:\s*"[^"]*"', '', description, flags=re.IGNORECASE)
+                                description = re.sub(r'"(?:pasos seguidos|conclusi[oó]n)"\s*:\s*[^}]*', '', description, flags=re.IGNORECASE | re.DOTALL)
+                                # Limpiar saltos de línea múltiples
+                                description = re.sub(r'\n+', ' ', description)
+                                description = re.sub(r'\s+', ' ', description).strip()
+                                print(f"✅ Descripción extraída del texto: {description[:100]}...")
                             else:
                                 # Buscar descripción en el texto sin el número de parada
                                 # Remover el número de parada del texto para obtener la descripción
@@ -2410,13 +2764,41 @@ def process_image_with_lm_studio(image_base64):
         }
 
 if __name__ == '__main__':
+    # Configurar logging ANTES de cualquier print
+    import logging
+    import sys
+    
+    # Configurar logging para que se muestre en consola
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(sys.stdout)
+        ]
+    )
+    
+    # Forzar que print() se muestre inmediatamente
+    sys.stdout.flush()
+    sys.stderr.flush()
+    
+    print("=" * 50)
     print("🚀 Iniciando Web-App de Incidencias...")
     print(f"📱 Accede desde tu móvil a: http://127.0.0.1:5015")
     print("💡 Asegúrate de estar en la misma red WiFi")
     print("🔐 Sistema de sesiones por dispositivo activado")
+    print("=" * 50)
+    sys.stdout.flush()
     
     # Iniciar limpieza de sesiones
     cleanup_expired_sessions()
     
-    app.run(host='127.0.0.1', port=5015, debug=True)
+    print("=" * 50)
+    print("🚀 SERVIDOR FLASK INICIADO")
+    print("✅ Endpoints disponibles:")
+    print("   - GET  /api/test (prueba)")
+    print("   - POST /api/incidences (crear incidencia)")
+    print("=" * 50)
+    sys.stdout.flush()
+    
+    app.run(host='127.0.0.1', port=5015, debug=True, use_reloader=False)
 

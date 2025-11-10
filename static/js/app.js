@@ -2,13 +2,18 @@
 let qrStream = null;
 let photoStream = null;
 let currentQRData = null;
-let currentPhotoData = null;
+let currentPhotoData = null; // Mantener para compatibilidad con código existente
+let imagenia = null; // Foto principal capturada/importada con "Reportar Incidencia" - se envía a la IA (única, se sustituye)
+let photoGallery = []; // Array para almacenar fotos adicionales (se envían con la incidencia pero NO a la IA)
+let currentPhotoIndex = 0; // Índice de la foto actual en la galería
+let photoMode = null; // 'reportar' o 'añadir' - indica desde dónde se abrió el modal de fotos
 let qrDetectionInterval = null; // Para detección automática de QR
 let nfcScanning = false; // Evitar múltiples lecturas simultáneas
 let ndefReader = null; // Lector NFC para poder detenerlo
 
 // Variables para grabación de audio
 let mediaRecorder = null;
+let audioStream = null; // Guardar referencia al stream para poder cerrarlo
 let audioChunks = [];
 let audioBlob = null;
 let recordingStartTime = null;
@@ -44,6 +49,7 @@ document.addEventListener('DOMContentLoaded', function() {
         userIndicator: document.getElementById('userIndicator'),
         currentUsername: document.getElementById('currentUsername'),
         logoutBtn: document.getElementById('logoutBtn'),
+        userIconBtn: document.getElementById('userIconBtn'),
         
         // Elementos existentes
         takePhotoBtn: document.getElementById('takePhotoBtn'),
@@ -97,7 +103,15 @@ document.addEventListener('DOMContentLoaded', function() {
         aiRawResponse: document.getElementById('aiRawResponse'),
         aiRawResponseText: document.getElementById('aiRawResponseText'),
         confirmAIResultsBtn: document.getElementById('confirmAIResultsBtn'),
-        cancelAIResultsBtn: document.getElementById('cancelAIResultsBtn')
+        cancelAIResultsBtn: document.getElementById('cancelAIResultsBtn'),
+        
+        // Elementos de la galería de fotos
+        addPhotosBtn: document.getElementById('addPhotosBtn'),
+        multiplePhotosInput: document.getElementById('multiplePhotosInput'),
+        photoGallery: document.getElementById('photoGallery'),
+        prevPhotoBtn: document.getElementById('prevPhotoBtn'),
+        nextPhotoBtn: document.getElementById('nextPhotoBtn'),
+        photoCount: document.getElementById('photoCount')
     };
     
     console.log('🔍 Elementos del DOM definidos');
@@ -113,10 +127,155 @@ document.addEventListener('DOMContentLoaded', function() {
         checkDeviceCapabilities();
         checkCameraPermissions();
         initializeAuth(); // Inicializar autenticación
+        
+        // Activar reconocimiento de voz automático si el usuario ya está autenticado
+        // (se ejecutará después de verificar la autenticación)
+        setTimeout(() => {
+            if (isAuthenticated) {
+                activateVoiceCommandOnLoad();
+            }
+        }, 3000); // Esperar 3 segundos para que se complete la verificación de autenticación
     } else {
         console.error('❌ Elementos críticos no encontrados');
     }
 });
+
+// Detectar shortcuts de Gemini/Google Assistant y activar acciones automáticamente
+// Usar múltiples eventos para asegurar que se detecte correctamente
+function handleActionFromURL() {
+    // Detectar si viene de un shortcut de Gemini
+    const urlParams = new URLSearchParams(window.location.search);
+    const action = urlParams.get('action');
+    
+    console.log('🔍 Verificando parámetros de URL:', { action, url: window.location.href });
+    
+    // Solo activar si hay explícitamente el parámetro action=voice
+    // No activar automáticamente cuando se abre la app normalmente
+    if (action === 'voice') {
+        console.log('🎤 Shortcut de voz detectado - Iniciando proceso de grabación...');
+        
+        // Función para intentar activar la grabación
+        const tryActivateRecording = (attempt = 0) => {
+            const maxAttempts = 15; // Intentar hasta 15 veces (15 segundos)
+            
+            console.log(`🎤 Intento ${attempt + 1}/${maxAttempts} - Verificando disponibilidad...`);
+            
+            // Verificar que el botón existe
+            if (!elements.recordAudioBtn) {
+                console.warn('⚠️ Botón recordAudioBtn no encontrado en elements');
+                if (attempt < maxAttempts) {
+                    setTimeout(() => tryActivateRecording(attempt + 1), 1000);
+                } else {
+                    console.error('❌ No se pudo encontrar el botón de grabación después de múltiples intentos');
+                }
+                return;
+            }
+            
+            // Verificar que el botón está visible
+            const isVisible = elements.recordAudioBtn.offsetParent !== null;
+            const isNotDisabled = !elements.recordAudioBtn.disabled;
+            const isDisplayed = window.getComputedStyle(elements.recordAudioBtn).display !== 'none';
+            
+            console.log('🎤 Estado del botón:', {
+                existe: !!elements.recordAudioBtn,
+                visible: isVisible,
+                noDeshabilitado: isNotDisabled,
+                display: window.getComputedStyle(elements.recordAudioBtn).display
+            });
+            
+            // Si el botón está disponible, activar la grabación
+            if (isVisible && isNotDisabled && isDisplayed) {
+                console.log('✅ Botón disponible - Activando grabación...');
+                
+                // Intentar primero con click() para mantener la consistencia con el flujo normal
+                try {
+                    elements.recordAudioBtn.click();
+                    console.log('✅ Click en botón ejecutado');
+                    
+                    // Verificar que el modal se abrió después de un breve delay
+                    setTimeout(() => {
+                        if (elements.audioModal && elements.audioModal.style.display !== 'none') {
+                            console.log('✅ Modal de audio abierto correctamente');
+                            
+                            // Intentar iniciar la grabación automáticamente si el botón de inicio está disponible
+                            setTimeout(() => {
+                                if (elements.startRecordingBtn && 
+                                    elements.startRecordingBtn.offsetParent !== null &&
+                                    !elements.startRecordingBtn.disabled) {
+                                    console.log('🎤 Iniciando grabación automáticamente...');
+                                    elements.startRecordingBtn.click();
+                                } else {
+                                    console.log('ℹ️ El usuario debe iniciar la grabación manualmente desde el modal');
+                                }
+                            }, 500);
+                        } else {
+                            console.warn('⚠️ El modal de audio no se abrió después del click');
+                        }
+                    }, 500);
+                    
+                } catch (error) {
+                    console.error('❌ Error al hacer click en el botón:', error);
+                    // Si el click falla, intentar llamar directamente a la función
+                    if (typeof startAudioRecording === 'function') {
+                        console.log('🔄 Intentando llamar directamente a startAudioRecording()...');
+                        try {
+                            startAudioRecording();
+                        } catch (funcError) {
+                            console.error('❌ Error al llamar a startAudioRecording():', funcError);
+                        }
+                    }
+                }
+                return;
+            }
+            
+            // Si no está disponible, intentar de nuevo
+            if (attempt < maxAttempts) {
+                console.log(`⏳ Esperando a que el botón esté disponible... (${attempt + 1}/${maxAttempts})`);
+                setTimeout(() => tryActivateRecording(attempt + 1), 1000);
+            } else {
+                console.error('❌ No se pudo activar la grabación después de múltiples intentos');
+                showStatus('No se pudo activar la grabación automáticamente. Por favor, haz click en "Grabar Audio" manualmente.', 'error');
+            }
+        };
+        
+        // Esperar un poco antes de intentar (para asegurar que todo esté inicializado)
+        setTimeout(() => tryActivateRecording(), 1500);
+    } else if (action === 'scan') {
+        console.log('📷 Shortcut de escaneo QR detectado');
+        // Aquí se puede añadir lógica para activar el escaneo QR automáticamente
+    } else if (action === 'photo') {
+        console.log('📸 Shortcut de foto detectado');
+        // Aquí se puede añadir lógica para activar la cámara automáticamente
+    }
+}
+
+// Ejecutar cuando la página se carga
+window.addEventListener('load', handleActionFromURL);
+
+// También ejecutar cuando la página se muestra (útil para PWAs)
+window.addEventListener('pageshow', (event) => {
+    // Si viene de caché, verificar de nuevo
+    if (event.persisted) {
+        console.log('🔄 Página restaurada desde caché - Verificando acciones...');
+        setTimeout(handleActionFromURL, 500);
+    }
+});
+
+// Detectar cuando la app se hace visible (solo verificar si hay parámetros en la URL)
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+        // Solo verificar si hay parámetros de acción en la URL
+        const urlParams = new URLSearchParams(window.location.search);
+        const action = urlParams.get('action');
+        if (action) {
+            console.log('👁️ App visible - Verificando acciones...');
+            setTimeout(handleActionFromURL, 1000);
+        }
+    }
+});
+
+// No activar automáticamente cuando se abre la app normalmente
+// Solo activar cuando hay explícitamente el parámetro action=voice en la URL
 
 // Configurar event listeners
 function initializeEventListeners() {
@@ -124,6 +283,7 @@ function initializeEventListeners() {
     if (elements.takePhotoBtn) {
         elements.takePhotoBtn.addEventListener('click', () => {
             stopNFCScanning(); // Detener NFC al pulsar reportar incidencia
+            photoMode = 'reportar'; // Establecer modo "Reportar Incidencia"
             startPhotoAutoCapture();
         });
     }
@@ -175,8 +335,12 @@ function initializeEventListeners() {
     }
     if (elements.importPhotoBtn) {
         elements.importPhotoBtn.addEventListener('click', () => {
+            // Usar el input del modal (photoFileInput) que ahora permite múltiples fotos
             if (elements.photoFileInput) {
                 elements.photoFileInput.click();
+            } else if (elements.multiplePhotosInput) {
+                // Fallback al input de múltiples fotos si no existe el del modal
+                elements.multiplePhotosInput.click();
             }
         });
     }
@@ -199,6 +363,29 @@ function initializeEventListeners() {
             startAudioRecording();
         });
     }
+    
+    // Botón para añadir múltiples fotos - abre modal de cámara
+    if (elements.addPhotosBtn) {
+        elements.addPhotosBtn.addEventListener('click', () => {
+            stopNFCScanning(); // Detener NFC al pulsar añadir fotos
+            photoMode = 'añadir'; // Establecer modo "Añadir Fotos"
+            startPhotoAutoCapture(); // Abrir modal de cámara para capturar o importar
+        });
+    }
+    
+    // Input para múltiples fotos (usado desde el botón "Importar Foto" del modal)
+    if (elements.multiplePhotosInput) {
+        elements.multiplePhotosInput.addEventListener('change', handleMultiplePhotos);
+    }
+    
+    // Navegación de la galería
+    if (elements.prevPhotoBtn) {
+        elements.prevPhotoBtn.addEventListener('click', () => navigateGallery(-1));
+    }
+    if (elements.nextPhotoBtn) {
+        elements.nextPhotoBtn.addEventListener('click', () => navigateGallery(1));
+    }
+    
     // Enviar incidencia
     if (elements.sendIncidenceBtn) {
         elements.sendIncidenceBtn.addEventListener('click', sendIncidenceFromPreview);
@@ -535,9 +722,33 @@ function capturePhoto() {
         context.drawImage(elements.photoVideo, 0, 0);
         
         const imageData = canvas.toDataURL('image/jpeg', 0.9);
-        currentPhotoData = imageData;
         
-        console.log('Foto capturada, datos:', imageData.substring(0, 100) + '...'); // Debug
+        // Verificar el modo: 'reportar' o 'añadir'
+        if (photoMode === 'reportar') {
+            // Modo "Reportar Incidencia": establecer como imagenia
+            imagenia = imageData;
+            currentPhotoData = imageData; // Mantener para compatibilidad
+            
+            // Limpiar solo las fotos adicionales (mantener fotos adicionales existentes)
+            // La galería mostrará: imagenia + fotos adicionales
+            const hadAdditionalPhotos = photoGallery.length > 0 && photoGallery[0] !== imagenia;
+            const additionalPhotos = hadAdditionalPhotos ? photoGallery.slice(1) : [];
+            
+            // Establecer nueva galería: imagenia + fotos adicionales existentes
+            photoGallery = [imageData, ...additionalPhotos];
+            
+            console.log('📸 Imagenia capturada (para IA):', imageData.substring(0, 100) + '...'); // Debug
+        } else if (photoMode === 'añadir') {
+            // Modo "Añadir Fotos": solo añadir a la galería, NO tocar imagenia
+            addPhotoToGallery(imageData);
+            console.log('📸 Foto adicional capturada:', imageData.substring(0, 100) + '...'); // Debug
+        } else {
+            // Modo no definido: por defecto, establecer como imagenia
+            imagenia = imageData;
+            currentPhotoData = imageData;
+            photoGallery = [imageData];
+            console.log('📸 Foto capturada (modo por defecto):', imageData.substring(0, 100) + '...'); // Debug
+        }
         
         // Ocultar imagen por defecto
         const defaultImageContainer = document.querySelector('.default-image-container');
@@ -545,8 +756,8 @@ function capturePhoto() {
             defaultImageContainer.style.display = 'none';
         }
         
-        // Mostrar vista previa
-        elements.previewImage.src = imageData;
+        // Mostrar vista previa con galería
+        updatePhotoGallery();
         elements.photoPreview.style.display = 'block';
         
         // Mostrar botón de enviar incidencia
@@ -577,74 +788,130 @@ function capturePhoto() {
     }
 }
 
-// Importar foto desde archivo
+// Importar foto desde archivo - funciona igual que capturePhoto
 function handlePhotoImport(event) {
     try {
-        const file = event.target.files[0];
-        if (!file) {
+        const files = Array.from(event.target.files);
+        if (files.length === 0) {
             return;
         }
         
-        // Validar que sea una imagen
-        if (!file.type.startsWith('image/')) {
-            showStatus('Por favor, selecciona un archivo de imagen', 'error');
+        // Validar que todos sean imágenes
+        const invalidFiles = files.filter(file => !file.type.startsWith('image/'));
+        if (invalidFiles.length > 0) {
+            showStatus('Algunos archivos no son imágenes válidas', 'error');
             return;
         }
         
-        console.log('Importando foto desde archivo:', file.name);
+        console.log(`Importando ${files.length} foto(s) desde archivo...`);
         
-        // Crear FileReader para leer el archivo
-        const reader = new FileReader();
+        // Procesar todas las fotos
+        let processedCount = 0;
+        const totalFiles = files.length;
         
-        reader.onload = function(e) {
-            const imageData = e.target.result;
-            currentPhotoData = imageData;
+        files.forEach((file, index) => {
+            const reader = new FileReader();
             
-            console.log('Foto importada, datos:', imageData.substring(0, 100) + '...');
+            reader.onload = function(e) {
+                const imageData = e.target.result;
+                
+                // Verificar el modo: 'reportar' o 'añadir'
+                if (photoMode === 'reportar') {
+                    // Modo "Reportar Incidencia": establecer como imagenia
+                    if (index === 0) {
+                        // Esta es imagenia - borrar la anterior y establecer la nueva
+                        imagenia = imageData;
+                        currentPhotoData = imageData; // Mantener para compatibilidad
+                    }
+                    
+                    // Añadir a la galería solo si NO es la primera (la primera es imagenia)
+                    if (index > 0) {
+                        addPhotoToGallery(imageData);
+                    }
+                } else if (photoMode === 'añadir') {
+                    // Modo "Añadir Fotos": solo añadir a la galería, NO tocar imagenia
+                    addPhotoToGallery(imageData);
+                } else {
+                    // Modo no definido: por defecto, establecer como imagenia
+                    if (index === 0) {
+                        imagenia = imageData;
+                        currentPhotoData = imageData;
+                    }
+                    if (index > 0) {
+                        addPhotoToGallery(imageData);
+                    }
+                }
+                
+                processedCount++;
+                
+                // Cuando todas las fotos estén procesadas, hacer lo mismo que capturePhoto
+                if (processedCount === totalFiles) {
+                    if (photoMode === 'reportar') {
+                        console.log('📸 Imagenia importada desde Reportar Incidencia');
+                        
+                        // Limpiar solo las fotos adicionales (mantener fotos adicionales existentes)
+                        // La galería mostrará: imagenia + fotos adicionales
+                        const hadAdditionalPhotos = photoGallery.length > 0 && photoGallery[0] !== imagenia;
+                        const additionalPhotos = hadAdditionalPhotos ? photoGallery.slice(1) : [];
+                        
+                        // Establecer nueva galería: imagenia + fotos adicionales existentes
+                        photoGallery = [imagenia, ...additionalPhotos];
+                    } else if (photoMode === 'añadir') {
+                        console.log('📸 Fotos adicionales importadas desde Añadir Fotos');
+                    } else {
+                        console.log('📸 Fotos importadas (modo por defecto)');
+                        if (imagenia && photoGallery.length > 0 && photoGallery[0] !== imagenia) {
+                            photoGallery = [imagenia, ...photoGallery];
+                        }
+                    }
+                    
+                    // Ocultar imagen por defecto
+                    const defaultImageContainer = document.querySelector('.default-image-container');
+                    if (defaultImageContainer) {
+                        defaultImageContainer.style.display = 'none';
+                    }
+                    
+                    // Mostrar vista previa con galería
+                    updatePhotoGallery();
+                    elements.photoPreview.style.display = 'block';
+                    
+                    // Mostrar botón de enviar incidencia
+                    if (elements.sendIncidenceBtn) {
+                        elements.sendIncidenceBtn.style.display = 'flex';
+                    }
+                    
+                    // Cambiar botones - igual que capturePhoto
+                    elements.capturePhotoBtn.style.display = 'none';
+                    if (elements.importPhotoBtn) {
+                        elements.importPhotoBtn.style.display = 'none';
+                    }
+                    elements.retakePhotoBtn.style.display = 'flex';
+                    
+                    showStatus(`${totalFiles} foto(s) importada(s). Revisa la vista previa.`, 'success');
+                    
+                    // Detener cámara si está activa
+                    stopPhotoCamera();
+                    
+                    // Cerrar modal para mostrar la vista previa con el botón de enviar incidencia
+                    setTimeout(() => {
+                        closePhotoModal();
+                    }, 500);
+                    
+                    // Limpiar el input para permitir seleccionar el mismo archivo de nuevo
+                    if (elements.photoFileInput) {
+                        elements.photoFileInput.value = '';
+                    }
+                }
+            };
             
-            // Ocultar imagen por defecto
-            const defaultImageContainer = document.querySelector('.default-image-container');
-            if (defaultImageContainer) {
-                defaultImageContainer.style.display = 'none';
-            }
+            reader.onerror = function() {
+                showStatus('Error al leer el archivo de imagen', 'error');
+                console.error('Error al leer archivo');
+            };
             
-            // Mostrar vista previa
-            elements.previewImage.src = imageData;
-            elements.photoPreview.style.display = 'block';
-            
-            // Mostrar botón de enviar incidencia
-            if (elements.sendIncidenceBtn) {
-                elements.sendIncidenceBtn.style.display = 'flex';
-            }
-            
-            // Cambiar botones
-            elements.capturePhotoBtn.style.display = 'none';
-            elements.importPhotoBtn.style.display = 'none';
-            elements.retakePhotoBtn.style.display = 'flex';
-            
-            showStatus('Foto importada. Revisa la vista previa.', 'success');
-            
-            // Detener cámara si está activa
-            stopPhotoCamera();
-            
-            // Cerrar modal para mostrar la vista previa con el botón de enviar incidencia
-            setTimeout(() => {
-                closePhotoModal();
-            }, 500);
-            
-            // Limpiar el input para permitir seleccionar el mismo archivo de nuevo
-            if (elements.photoFileInput) {
-                elements.photoFileInput.value = '';
-            }
-        };
-        
-        reader.onerror = function() {
-            showStatus('Error al leer el archivo de imagen', 'error');
-            console.error('Error al leer archivo');
-        };
-        
-        // Leer el archivo como Data URL (base64)
-        reader.readAsDataURL(file);
+            // Leer el archivo como Data URL (base64)
+            reader.readAsDataURL(file);
+        });
         
     } catch (error) {
         console.error('Error al importar foto:', error);
@@ -652,9 +919,243 @@ function handlePhotoImport(event) {
     }
 }
 
+// Manejar múltiples fotos seleccionadas
+function handleMultiplePhotos(event) {
+    try {
+        console.log('📸 handleMultiplePhotos llamada', event);
+        const files = Array.from(event.target.files);
+        console.log('📸 Archivos seleccionados:', files.length);
+        
+        if (files.length === 0) {
+            console.log('⚠️ No se seleccionaron archivos');
+            return;
+        }
+        
+        // Validar que todos sean imágenes
+        const invalidFiles = files.filter(file => !file.type.startsWith('image/'));
+        if (invalidFiles.length > 0) {
+            showStatus('Algunos archivos no son imágenes válidas', 'error');
+            return;
+        }
+        
+        console.log(`📸 Añadiendo ${files.length} foto(s) a la galería...`);
+        
+        // Procesar cada archivo
+        let processedCount = 0;
+        let hasError = false;
+        
+        files.forEach((file, index) => {
+            const reader = new FileReader();
+            
+            reader.onload = function(e) {
+                try {
+                    const imageData = e.target.result;
+                    console.log(`📸 Foto ${index + 1}/${files.length} procesada correctamente`);
+                    
+                    // Verificar el modo: 'reportar' o 'añadir'
+                    // handleMultiplePhotos se usa desde "Añadir Fotos", así que siempre añadir
+                    addPhotoToGallery(imageData);
+                    processedCount++;
+                    
+                    console.log(`📸 Procesadas: ${processedCount}/${files.length}`);
+                    
+                    if (processedCount === files.length && !hasError) {
+                        console.log('📸 Todas las fotos adicionales procesadas, actualizando UI...');
+                        
+                        // Ocultar imagen por defecto
+                        const defaultImageContainer = document.querySelector('.default-image-container');
+                        if (defaultImageContainer) {
+                            defaultImageContainer.style.display = 'none';
+                        }
+                        
+                        // Mostrar vista previa con galería
+                        updatePhotoGallery();
+                        elements.photoPreview.style.display = 'block';
+                        
+                        // Mostrar botón de enviar incidencia
+                        if (elements.sendIncidenceBtn) {
+                            elements.sendIncidenceBtn.style.display = 'flex';
+                        }
+                        
+                        showStatus(`${files.length} foto(s) adicional(es) añadida(s) a la galería`, 'success');
+                        
+                        // Detener cámara si está activa
+                        stopPhotoCamera();
+                        
+                        // Cerrar modal para mostrar la vista previa con el botón de enviar incidencia
+                        setTimeout(() => {
+                            closePhotoModal();
+                        }, 500);
+                        
+                        // Limpiar el input para permitir seleccionar las mismas fotos de nuevo
+                        if (event.target === elements.photoFileInput) {
+                            elements.photoFileInput.value = '';
+                        } else if (event.target === elements.multiplePhotosInput) {
+                            elements.multiplePhotosInput.value = '';
+                        }
+                    }
+                } catch (error) {
+                    console.error(`Error procesando foto ${index + 1}:`, error);
+                    hasError = true;
+                }
+            };
+            
+            reader.onerror = function() {
+                console.error(`Error al leer el archivo ${file.name}`);
+                showStatus(`Error al leer ${file.name}`, 'error');
+                hasError = true;
+            };
+            
+            reader.readAsDataURL(file);
+        });
+        
+    } catch (error) {
+        console.error('Error al manejar múltiples fotos:', error);
+        showStatus('Error al añadir fotos: ' + error.message, 'error');
+    }
+}
+
+// Añadir una foto a la galería
+function addPhotoToGallery(imageData) {
+    photoGallery.push(imageData);
+    console.log(`📸 Foto añadida. Total: ${photoGallery.length}`);
+}
+
+// Actualizar la visualización de la galería
+function updatePhotoGallery() {
+    if (!elements.photoGallery) {
+        return;
+    }
+    
+    // Limpiar la galería
+    elements.photoGallery.innerHTML = '';
+    
+    // Si hay imagenia, debe estar al inicio de la galería
+    // Asegurarse de que imagenia esté en la galería si existe
+    if (imagenia && (photoGallery.length === 0 || photoGallery[0] !== imagenia)) {
+        photoGallery.unshift(imagenia);
+    }
+    
+    if (photoGallery.length === 0) {
+        return;
+    }
+    
+    // Crear elementos para cada foto
+    photoGallery.forEach((imageData, index) => {
+        const galleryItem = document.createElement('div');
+        galleryItem.className = 'photo-gallery-item';
+        galleryItem.dataset.index = index;
+        
+        const img = document.createElement('img');
+        img.src = imageData;
+        img.alt = `Foto ${index + 1}`;
+        
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'remove-photo-btn';
+        removeBtn.innerHTML = '<i class="fas fa-times"></i>';
+        removeBtn.title = 'Eliminar foto';
+        removeBtn.onclick = () => removePhotoFromGallery(index);
+        
+        galleryItem.appendChild(img);
+        galleryItem.appendChild(removeBtn);
+        
+        // Añadir indicador "AI" a la primera foto (imagenia)
+        if (index === 0 && imagenia) {
+            const aiBadge = document.createElement('div');
+            aiBadge.className = 'ai-badge';
+            aiBadge.textContent = 'AI';
+            aiBadge.title = 'Esta foto se enviará a la IA';
+            galleryItem.appendChild(aiBadge);
+        }
+        
+        elements.photoGallery.appendChild(galleryItem);
+    });
+    
+    // Actualizar contador
+    if (elements.photoCount) {
+        elements.photoCount.textContent = photoGallery.length;
+    }
+    
+    // Mostrar/ocultar botones de navegación
+    if (elements.prevPhotoBtn && elements.nextPhotoBtn) {
+        if (photoGallery.length > 1) {
+            elements.prevPhotoBtn.style.display = 'flex';
+            elements.nextPhotoBtn.style.display = 'flex';
+        } else {
+            elements.prevPhotoBtn.style.display = 'none';
+            elements.nextPhotoBtn.style.display = 'none';
+        }
+    }
+    
+    // Scroll a la primera foto
+    if (elements.photoGallery) {
+        elements.photoGallery.scrollLeft = 0;
+    }
+    
+    currentPhotoIndex = 0;
+}
+
+// Navegar por la galería
+function navigateGallery(direction) {
+    if (photoGallery.length === 0) {
+        return;
+    }
+    
+    currentPhotoIndex += direction;
+    
+    if (currentPhotoIndex < 0) {
+        currentPhotoIndex = photoGallery.length - 1;
+    } else if (currentPhotoIndex >= photoGallery.length) {
+        currentPhotoIndex = 0;
+    }
+    
+    // Scroll a la foto actual
+    if (elements.photoGallery) {
+        const galleryItem = elements.photoGallery.querySelector(`[data-index="${currentPhotoIndex}"]`);
+        if (galleryItem) {
+            galleryItem.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'start' });
+        }
+    }
+}
+
+// Eliminar una foto de la galería
+function removePhotoFromGallery(index) {
+    if (index < 0 || index >= photoGallery.length) {
+        return;
+    }
+    
+    photoGallery.splice(index, 1);
+    console.log(`📸 Foto eliminada. Total: ${photoGallery.length}`);
+    
+    // Actualizar la galería
+    updatePhotoGallery();
+    
+    // Si no quedan fotos, ocultar la vista previa
+    if (photoGallery.length === 0) {
+        elements.photoPreview.style.display = 'none';
+        
+        // Ocultar botón de enviar incidencia
+        if (elements.sendIncidenceBtn) {
+            elements.sendIncidenceBtn.style.display = 'none';
+        }
+        
+        // Mostrar imagen por defecto
+        const defaultImageContainer = document.querySelector('.default-image-container');
+        if (defaultImageContainer) {
+            defaultImageContainer.style.display = 'block';
+        }
+        
+        // Limpiar currentPhotoData para compatibilidad
+        currentPhotoData = null;
+    }
+}
+
 // Volver a tomar foto
 function retakePhoto() {
     currentPhotoData = null;
+    imagenia = null; // Limpiar también imagenia
+    photoGallery = [];
+    currentPhotoIndex = 0;
     elements.photoPreview.style.display = 'none';
     
     // Ocultar botón de enviar incidencia
@@ -739,9 +1240,10 @@ async function uploadPhoto() {
     console.log('📸 currentPhotoData existe:', !!currentPhotoData);
     console.log('📸 pendingIncidenceData:', pendingIncidenceData);
     
-    // Verificar que tenemos los datos necesarios
-    if (!currentPhotoData) {
-        showStatus('No hay foto para enviar', 'error');
+    // Verificar que tenemos fotos para enviar
+    const photosToSend = photoGallery.length > 0 ? photoGallery : (currentPhotoData ? [currentPhotoData] : []);
+    if (photosToSend.length === 0) {
+        showStatus('No hay fotos para enviar', 'error');
         return;
     }
     
@@ -762,6 +1264,14 @@ async function uploadPhoto() {
         // Crear payload de la incidencia con foto
         let incidencePayload;
         
+        // Componer imágenes: usar todas las fotos de la galería
+        const images = photosToSend.map((photoData, index) => ({
+            file: photoData,
+            name: hasQRData 
+                ? `incidencia_qr_${Date.now()}_${index + 1}.jpg`
+                : `incidencia_parada_${pendingIncidenceData.stopNumber}_${Date.now()}_${index + 1}.jpg`
+        }));
+        
         if (hasQRData) {
             // Usar datos de QR
             const qrId = extractQRId(currentQRData);
@@ -771,10 +1281,7 @@ async function uploadPhoto() {
                 observation: currentQRData,
                 description: 'Incidencia reportada con QR',
                 resource: qrId,
-                image: [{
-                    file: currentPhotoData,
-                    name: `incidencia_qr_${Date.now()}.jpg`
-                }],
+                image: images,
                 audio: []
             };
         } else {
@@ -785,41 +1292,30 @@ async function uploadPhoto() {
                 observation: pendingIncidenceData.fullText || 'Incidencia reportada con audio',
                 description: pendingIncidenceData.description || 'Incidencia reportada con audio',
                 resource: `PARADA_${pendingIncidenceData.stopNumber}`,
-                image: [{
-                    file: currentPhotoData,
-                    name: `incidencia_parada_${pendingIncidenceData.stopNumber}_${Date.now()}.jpg`
-                }],
+                image: images,
                 audio: []
             };
         }
         
         console.log('📋 Enviando incidencia con foto:', incidencePayload);
         console.log('🔍 Datos de audio pendientes:', pendingIncidenceData);
-        console.log('📸 Datos de foto:', currentPhotoData ? 'Foto disponible' : 'Sin foto');
+        console.log('📸 Total de fotos a enviar:', photosToSend.length);
+        console.log('📸 Fotos en galería:', photoGallery.length);
         
-        // Enviar incidencia
-        const response = await fetch('/api/incidences', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Device-ID': deviceId
-            },
-            body: JSON.stringify(incidencePayload)
-        });
+        // Enviar incidencia en segundo plano (no bloquea la UI)
+        const successMessage = hasQRData 
+            ? 'Incidencia enviada con QR'
+            : `Incidencia enviada: Parada ${pendingIncidenceData.stopNumber} - ${pendingIncidenceData.description}`;
         
-        const result = await response.json();
-        
-        if (result.success) {
-            showStatus(`Incidencia enviada: Parada ${pendingIncidenceData.stopNumber} - ${pendingIncidenceData.description}`, 'success');
-            console.log('✅ Incidencia enviada exitosamente:', result);
-            
-            // Limpiar completamente la pantalla
-            resetUIAfterIncidenceSent();
-            
-        } else {
-            showStatus('Error al enviar incidencia: ' + result.error, 'error');
-            console.error('❌ Error al enviar incidencia:', result);
-        }
+        sendIncidenceInBackground(
+            incidencePayload,
+            successMessage,
+            null,
+            () => {
+                // Limpiar completamente la pantalla después del envío exitoso
+                resetUIAfterIncidenceSent();
+            }
+        );
         
     } catch (error) {
         showStatus('Error al enviar incidencia: ' + error.message, 'error');
@@ -830,12 +1326,16 @@ async function uploadPhoto() {
 // Procesar imagen con IA cuando no hay QR ni audio
 async function processImageWithAI() {
     try {
-        if (!currentPhotoData) {
+        // Usar solo la foto principal para la IA
+        const photoForAI = imagenia || currentPhotoData;
+        
+        if (!photoForAI) {
             showStatus('No hay foto para procesar', 'error');
             return;
         }
         
         console.log('🤖 Iniciando procesamiento de imagen con IA...');
+        console.log('📸 Usando foto principal para IA');
         showStatus('Procesando imagen con IA...', 'info');
         
         // Mostrar modal de procesamiento
@@ -844,19 +1344,12 @@ async function processImageWithAI() {
         elements.aiResultsForm.style.display = 'none';
         elements.confirmAIResultsBtn.style.display = 'none';
         
-        // Verificar que tenemos la imagen
-        if (!currentPhotoData) {
-            showStatus('No hay foto para procesar', 'error');
-            console.error('❌ currentPhotoData es null o undefined');
-            return;
-        }
-        
-        console.log('📸 Enviando imagen a IA...');
-        console.log('📸 Tipo de imagen:', typeof currentPhotoData);
-        console.log('📸 Longitud de imagen:', currentPhotoData ? currentPhotoData.length : 'N/A');
-        console.log('📸 Primeros 100 caracteres:', currentPhotoData ? currentPhotoData.substring(0, 100) : 'N/A');
-        
-        // Enviar imagen al backend para procesar con LM Studio
+        console.log('📸 Enviando imagen principal a IA...');
+        console.log('📸 Tipo de imagen:', typeof photoForAI);
+        console.log('📸 Longitud de imagen:', photoForAI ? photoForAI.length : 'N/A');
+        console.log('📸 Primeros 100 caracteres:', photoForAI ? photoForAI.substring(0, 100) : 'N/A');
+        //const timeoutId = setTimeout(() => controller.abort(), 200000);
+        // Enviar imagen principal al backend para procesar con LM Studio
         const response = await fetch('/api/process-image-ai', {
             method: 'POST',
             headers: {
@@ -864,9 +1357,10 @@ async function processImageWithAI() {
                 'X-Device-ID': deviceId
             },
             body: JSON.stringify({
-                image: currentPhotoData
+                image: photoForAI
             })
         });
+        //clearTimeout(timeoutId); // Limpiar timeout si la respuesta llega a tiempo
         
         console.log('📡 Respuesta recibida del servidor, status:', response.status);
         
@@ -1024,6 +1518,15 @@ async function confirmAIResults() {
         // Ahora enviar la incidencia con foto y datos de IA
         showStatus('Enviando incidencia con datos de IA...', 'info');
         
+        // Obtener todas las fotos de la galería
+        const photosToSend = photoGallery.length > 0 ? photoGallery : (currentPhotoData ? [currentPhotoData] : []);
+        
+        // Componer imágenes: usar todas las fotos de la galería
+        const images = photosToSend.map((photoData, index) => ({
+            file: photoData,
+            name: `incidencia_parada_${pendingIncidenceData.stopNumber}_${Date.now()}_${index + 1}.jpg`
+        }));
+        
         // Crear payload de la incidencia
         const incidencePayload = {
             state: 'PENDING',
@@ -1031,38 +1534,22 @@ async function confirmAIResults() {
             observation: pendingIncidenceData.fullText,
             description: pendingIncidenceData.description,
             resource: `PARADA_${pendingIncidenceData.stopNumber}`,
-            image: [{
-                file: currentPhotoData,
-                name: `incidencia_parada_${pendingIncidenceData.stopNumber}_${Date.now()}.jpg`
-            }],
+            image: images,
             audio: []
         };
         
         console.log('📋 Enviando incidencia con datos de IA:', incidencePayload);
         
-        // Enviar incidencia
-        const response = await fetch('/api/incidences', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Device-ID': deviceId
-            },
-            body: JSON.stringify(incidencePayload)
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            showStatus(`Incidencia enviada: Parada ${stopNumber} - ${description}`, 'success');
-            console.log('✅ Incidencia enviada exitosamente:', result);
-            
-            // Limpiar completamente la pantalla
-            resetUIAfterIncidenceSent();
-            
-        } else {
-            showStatus('Error al enviar incidencia: ' + result.error, 'error');
-            console.error('❌ Error al enviar incidencia:', result);
-        }
+        // Enviar incidencia en segundo plano (no bloquea la UI)
+        sendIncidenceInBackground(
+            incidencePayload,
+            `Incidencia enviada: Parada ${stopNumber} - ${description}`,
+            null,
+            () => {
+                // Limpiar completamente la pantalla después del envío exitoso
+                resetUIAfterIncidenceSent();
+            }
+        );
         
     } catch (error) {
         console.error('❌ Error confirmando resultados de IA:', error);
@@ -1203,22 +1690,389 @@ function stopNFCScanning() {
 }
 
 // ========================================
+// WAKE LOCK - MANTENER PANTALLA ACTIVA
+// ========================================
+
+let wakeLock = null;
+
+// Activar Wake Lock para mantener la pantalla activa
+async function requestWakeLock() {
+    try {
+        // Verificar si el navegador soporta Wake Lock
+        if ('wakeLock' in navigator) {
+            wakeLock = await navigator.wakeLock.request('screen');
+            console.log('✅ Wake Lock activado - Pantalla se mantendrá activa');
+            
+            // Manejar cuando el wake lock se libera (por ejemplo, cuando el usuario cambia de pestaña)
+            wakeLock.addEventListener('release', () => {
+                console.log('⚠️ Wake Lock liberado');
+            });
+        } else {
+            console.log('⚠️ Wake Lock no soportado en este navegador');
+        }
+    } catch (error) {
+        console.error('❌ Error al activar Wake Lock:', error);
+        // Intentar activar la pantalla de otra manera
+        try {
+            // Vibrar para despertar el dispositivo
+            if ('vibrate' in navigator) {
+                navigator.vibrate([200, 100, 200]);
+            }
+        } catch (vibrateError) {
+            console.log('No se pudo vibrar:', vibrateError);
+        }
+    }
+}
+
+// Liberar Wake Lock
+async function releaseWakeLock() {
+    if (wakeLock) {
+        try {
+            await wakeLock.release();
+            wakeLock = null;
+            console.log('✅ Wake Lock liberado');
+        } catch (error) {
+            console.error('❌ Error al liberar Wake Lock:', error);
+        }
+    }
+}
+
+// Manejar cuando la página se oculta (liberar wake lock)
+document.addEventListener('visibilitychange', async () => {
+    if (document.hidden && wakeLock) {
+        await releaseWakeLock();
+    }
+});
+
+// ========================================
+// RECONOCIMIENTO DE VOZ AUTOMÁTICO
+// ========================================
+
+let voiceRecognition = null;
+let voiceRecognitionTimeout = null;
+let isListeningForCommand = false;
+let isManualRecording = false; // Flag para indicar que se está grabando manualmente
+let voiceRecognitionDisabled = false; // Flag para deshabilitar completamente el reconocimiento de voz
+
+// Inicializar reconocimiento de voz para escuchar comandos
+function initVoiceCommandRecognition() {
+    // NO iniciar si está deshabilitado
+    if (voiceRecognitionDisabled) {
+        console.log('🚫 Reconocimiento de voz deshabilitado');
+        return;
+    }
+    
+    // Verificar si el navegador soporta reconocimiento de voz
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    
+    if (!SpeechRecognition) {
+        console.log('⚠️ El navegador no soporta reconocimiento de voz');
+        return;
+    }
+    
+    // Solo activar si el usuario está autenticado
+    if (!isAuthenticated) {
+        console.log('ℹ️ Usuario no autenticado - No se activa reconocimiento de voz');
+        return;
+    }
+    
+    // No activar si ya hay una grabación en curso
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+        console.log('ℹ️ Ya hay una grabación en curso - No se activa reconocimiento de voz');
+        return;
+    }
+    
+    // No activar si se está grabando manualmente
+    if (isManualRecording) {
+        console.log('ℹ️ Grabación manual en curso - No se activa reconocimiento de voz');
+        return;
+    }
+    
+    // No activar si el modal de audio está abierto
+    if (elements.audioModal && elements.audioModal.style.display === 'block') {
+        console.log('ℹ️ Modal de audio abierto - No se activa reconocimiento de voz');
+        return;
+    }
+    
+    // No activar si ya se está escuchando
+    if (isListeningForCommand) {
+        console.log('ℹ️ Ya se está escuchando un comando');
+        return;
+    }
+    
+    try {
+        voiceRecognition = new SpeechRecognition();
+        voiceRecognition.lang = 'es-ES'; // Español
+        voiceRecognition.continuous = false; // No continuo, solo una vez
+        voiceRecognition.interimResults = false; // Solo resultados finales
+        
+        // Comandos que activarán la grabación
+        const commands = [
+            'crear incidencia',
+            'crear una incidencia',
+            'crea incidencia',
+            'crea una incidencia',
+            'reportar incidencia',
+            'reportar una incidencia',
+            'nueva incidencia',
+            'grabar incidencia',
+            'grabar una incidencia'
+        ];
+        
+        voiceRecognition.onstart = () => {
+            console.log('🎤 Reconocimiento de voz iniciado - Escuchando comando...');
+            isListeningForCommand = true;
+            
+            // Activar Wake Lock para mantener la pantalla activa
+            requestWakeLock();
+            
+            // Mostrar indicador visual opcional
+            showStatus('Escuchando... Di "Crear incidencia"', 'info');
+        };
+        
+        voiceRecognition.onresult = (event) => {
+            const transcript = event.results[0][0].transcript.toLowerCase().trim();
+            console.log('🎤 Comando detectado:', transcript);
+            
+            // Verificar si el comando coincide con alguno de los comandos esperados
+            const commandDetected = commands.some(cmd => 
+                transcript.includes(cmd.toLowerCase())
+            );
+            
+            if (commandDetected) {
+                console.log('✅ Comando reconocido - Activando grabación de audio...');
+                stopVoiceCommandRecognition();
+                
+                // Esperar un poco antes de activar la grabación
+                setTimeout(() => {
+                    if (elements.recordAudioBtn && isAuthenticated) {
+                        elements.recordAudioBtn.click();
+                        
+                        // Iniciar la grabación automáticamente después de abrir el modal
+                        setTimeout(() => {
+                            if (elements.startRecordingBtn && 
+                                elements.startRecordingBtn.offsetParent !== null &&
+                                !elements.startRecordingBtn.disabled) {
+                                console.log('🎤 Iniciando grabación automáticamente...');
+                                elements.startRecordingBtn.click();
+                            }
+                        }, 500);
+                    }
+                }, 300);
+            } else {
+                console.log('ℹ️ Comando no reconocido:', transcript);
+            }
+        };
+        
+        voiceRecognition.onerror = (event) => {
+            console.error('❌ Error en reconocimiento de voz:', event.error);
+            stopVoiceCommandRecognition();
+            
+            // Liberar Wake Lock si no hay grabación en curso
+            if (!mediaRecorder || mediaRecorder.state !== 'recording') {
+                releaseWakeLock();
+            }
+            
+            // No mostrar error si el usuario no habló (error común)
+            if (event.error !== 'no-speech' && event.error !== 'aborted') {
+                // showStatus('Error en reconocimiento de voz', 'error');
+            }
+        };
+        
+        voiceRecognition.onend = () => {
+            console.log('🎤 Reconocimiento de voz finalizado');
+            isListeningForCommand = false;
+            
+            // NO reactivar si está deshabilitado o hay condiciones que lo impiden
+            if (voiceRecognitionDisabled || 
+                isManualRecording || 
+                (elements.audioModal && elements.audioModal.style.display === 'block') ||
+                (mediaRecorder && mediaRecorder.state === 'recording')) {
+                console.log('🚫 No se reactiva reconocimiento de voz');
+                // Liberar Wake Lock si no hay grabación en curso
+                if (!mediaRecorder || mediaRecorder.state !== 'recording') {
+                    releaseWakeLock();
+                }
+                return;
+            }
+            
+            // Liberar Wake Lock si no hay grabación en curso
+            if (!mediaRecorder || mediaRecorder.state !== 'recording') {
+                releaseWakeLock();
+            }
+            
+            // Solo reactivar si está habilitado y todas las condiciones son seguras
+            setTimeout(() => {
+                if (!voiceRecognitionDisabled &&
+                    !isManualRecording && 
+                    (!elements.audioModal || elements.audioModal.style.display === 'none') &&
+                    !isListeningForCommand &&
+                    isAuthenticated &&
+                    (!mediaRecorder || mediaRecorder.state !== 'recording')) {
+                    console.log('🔄 Reactivando reconocimiento de voz...');
+                    initVoiceCommandRecognition();
+                }
+            }, 2000); // Aumentar a 2 segundos para dar más tiempo
+        };
+        
+        // Iniciar reconocimiento
+        voiceRecognition.start();
+        
+        // Configurar timeout para detener después de X segundos
+        const listenDuration = 5000; // 5 segundos
+        voiceRecognitionTimeout = setTimeout(() => {
+            console.log('⏱️ Tiempo de escucha agotado');
+            stopVoiceCommandRecognition();
+            
+            // Liberar Wake Lock si no hay grabación en curso
+            if (!mediaRecorder || mediaRecorder.state !== 'recording') {
+                releaseWakeLock();
+            }
+        }, listenDuration);
+        
+    } catch (error) {
+        console.error('❌ Error al inicializar reconocimiento de voz:', error);
+        isListeningForCommand = false;
+    }
+}
+
+// Detener reconocimiento de voz
+function stopVoiceCommandRecognition() {
+    console.log('🛑 Deteniendo reconocimiento de voz...');
+    
+    if (voiceRecognition) {
+        try {
+            // Intentar abortar primero (más agresivo) - esto libera el micrófono inmediatamente
+            if (voiceRecognition.abort) {
+                voiceRecognition.abort();
+                console.log('✅ Reconocimiento de voz abortado');
+            }
+            // Luego detener
+            try {
+                voiceRecognition.stop();
+                console.log('✅ Reconocimiento de voz detenido');
+            } catch (stopError) {
+                // Ignorar error si ya fue abortado
+                console.log('ℹ️ Ya estaba detenido:', stopError);
+            }
+        } catch (error) {
+            console.log('⚠️ Error al detener reconocimiento:', error);
+        }
+        
+        // Eliminar todos los event listeners para evitar que se reactive
+        try {
+            voiceRecognition.onstart = null;
+            voiceRecognition.onresult = null;
+            voiceRecognition.onerror = null;
+            voiceRecognition.onend = null;
+        } catch (e) {
+            console.log('⚠️ Error al limpiar listeners:', e);
+        }
+        
+        voiceRecognition = null;
+    }
+    
+    if (voiceRecognitionTimeout) {
+        clearTimeout(voiceRecognitionTimeout);
+        voiceRecognitionTimeout = null;
+    }
+    
+    isListeningForCommand = false;
+    
+    // Liberar Wake Lock si no hay grabación en curso
+    if (!mediaRecorder || mediaRecorder.state !== 'recording') {
+        releaseWakeLock();
+    }
+    
+    console.log('✅ Reconocimiento de voz completamente detenido');
+}
+
+// Activar reconocimiento de voz al cargar la app (solo si está autenticado)
+function activateVoiceCommandOnLoad() {
+    // Esperar a que la app esté completamente cargada
+    setTimeout(() => {
+        // Verificar múltiples condiciones antes de activar
+        if (isAuthenticated && 
+            !isListeningForCommand && 
+            !isManualRecording &&
+            !voiceRecognitionDisabled &&
+            (!elements.audioModal || elements.audioModal.style.display === 'none') &&
+            (!mediaRecorder || mediaRecorder.state !== 'recording')) {
+            console.log('🚀 Activando reconocimiento de voz automático...');
+            initVoiceCommandRecognition();
+        } else {
+            console.log('🚫 No se activa reconocimiento de voz:', {
+                isAuthenticated,
+                isListeningForCommand,
+                isManualRecording,
+                voiceRecognitionDisabled,
+                audioModalOpen: elements.audioModal && elements.audioModal.style.display === 'block',
+                recording: mediaRecorder && mediaRecorder.state === 'recording'
+            });
+        }
+    }, 3000); // Esperar 3 segundos después de cargar para dar tiempo a que la app esté lista
+}
+
+// ========================================
 // FUNCIONES DE GRABACIÓN DE AUDIO
 // ========================================
 
 // Iniciar grabación de audio
 function startAudioRecording() {
-    console.log('🎤 Iniciando grabación de audio...');
+    console.log('🎤 Abriendo modal de audio...');
+    
+    // DESHABILITAR COMPLETAMENTE el reconocimiento de voz ANTES de abrir el modal
+    voiceRecognitionDisabled = true;
+    
+    // Detener reconocimiento de voz de forma agresiva
+    stopVoiceCommandRecognition();
+    
+    // Marcar como grabación manual desde que se abre el modal
+    isManualRecording = true;
+    
+    // Abrir el modal inmediatamente (sin esperas)
     elements.audioModal.style.display = 'block';
     resetAudioUI();
+    
+    console.log('✅ Modal de audio abierto - Reconocimiento de voz DESHABILITADO');
 }
 
 // Cerrar modal de audio
 function closeAudioModal() {
+    console.log('🚪 Cerrando modal de audio...');
+    
+    stopVoiceCommandRecognition(); // Detener reconocimiento de voz
     elements.audioModal.style.display = 'none';
+    
     if (mediaRecorder && mediaRecorder.state === 'recording') {
         stopRecording();
     }
+    
+    // Asegurarse de cerrar el stream si existe
+    if (audioStream) {
+        audioStream.getTracks().forEach(track => track.stop());
+        audioStream = null;
+    }
+    
+    // Resetear flags
+    isManualRecording = false;
+    
+    // Esperar antes de reactivar el reconocimiento de voz
+    setTimeout(() => {
+        voiceRecognitionDisabled = false; // HABILITAR reconocimiento de voz de nuevo
+        console.log('✅ Reconocimiento de voz HABILITADO de nuevo');
+        
+        // Reactivar solo si todas las condiciones son seguras
+        if (isAuthenticated && 
+            !isManualRecording && 
+            (!elements.audioModal || elements.audioModal.style.display === 'none') &&
+            (!mediaRecorder || mediaRecorder.state !== 'recording')) {
+            console.log('🔄 Reactivando reconocimiento de voz después de cerrar modal...');
+            setTimeout(() => {
+                initVoiceCommandRecognition();
+            }, 1000);
+        }
+    }, 1000);
 }
 
 // Resetear UI de audio
@@ -1235,21 +2089,77 @@ function resetAudioUI() {
     audioChunks = [];
     audioBlob = null;
     mediaRecorder = null;
+    
+    // Cerrar stream si existe
+    if (audioStream) {
+        audioStream.getTracks().forEach(track => track.stop());
+        audioStream = null;
+    }
 }
 
 // Iniciar grabación
 async function startRecording() {
     try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        console.log('🎤 ===== INICIANDO GRABACIÓN =====');
+        
+        // Verificar si ya hay una grabación en curso
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+            console.log('⚠️ Ya hay una grabación en curso');
+            return;
+        }
+        
+        // Asegurarse de que el reconocimiento de voz esté completamente deshabilitado
+        voiceRecognitionDisabled = true;
+        stopVoiceCommandRecognition();
+        
+        // Cerrar cualquier stream anterior
+        if (audioStream) {
+            console.log('🔄 Cerrando stream anterior...');
+            audioStream.getTracks().forEach(track => {
+                track.stop();
+                console.log('✅ Track detenido:', track.kind);
+            });
+            audioStream = null;
+        }
+        
+        console.log('🎤 Solicitando acceso al micrófono...');
+        
+        // Activar Wake Lock
+        await requestWakeLock();
+        
+        // Solicitar acceso al micrófono directamente (sin esperas innecesarias)
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }
+        });
+        
+        audioStream = stream;
+        console.log('✅ Acceso al micrófono obtenido');
+        console.log('📊 Stream:', {
+            active: stream.active,
+            tracks: stream.getTracks().length,
+            trackStates: stream.getTracks().map(t => ({
+                kind: t.kind,
+                enabled: t.enabled,
+                readyState: t.readyState,
+                muted: t.muted
+            }))
+        });
         
         mediaRecorder = new MediaRecorder(stream);
         audioChunks = [];
         
         mediaRecorder.ondataavailable = (event) => {
-            audioChunks.push(event.data);
+            if (event.data && event.data.size > 0) {
+                audioChunks.push(event.data);
+            }
         };
         
         mediaRecorder.onstop = () => {
+            console.log('🛑 MediaRecorder detenido');
             audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
             const audioUrl = URL.createObjectURL(audioBlob);
             elements.audioPlayer.src = audioUrl;
@@ -1261,7 +2171,21 @@ async function startRecording() {
             elements.audioPreview.style.display = 'block';
             
             // Detener el stream
-            stream.getTracks().forEach(track => track.stop());
+            if (audioStream) {
+                audioStream.getTracks().forEach(track => track.stop());
+                audioStream = null;
+            }
+            
+            // Resetear flag de grabación manual
+            isManualRecording = false;
+            
+            // Liberar Wake Lock cuando se detiene la grabación
+            releaseWakeLock();
+        };
+        
+        mediaRecorder.onerror = (event) => {
+            console.error('❌ Error en MediaRecorder:', event.error);
+            showStatus('Error durante la grabación: ' + (event.error?.message || 'Error desconocido'), 'error');
         };
         
         mediaRecorder.start();
@@ -1275,11 +2199,35 @@ async function startRecording() {
         // Actualizar duración cada segundo
         recordingInterval = setInterval(updateRecordingDuration, 1000);
         
-        console.log('🎤 Grabación iniciada');
+        console.log('🎤 Grabación iniciada correctamente');
         
     } catch (error) {
-        console.error('Error al iniciar grabación:', error);
+        console.error('❌ Error al iniciar grabación:', error);
+        console.error('❌ Detalles del error:', {
+            name: error.name,
+            message: error.message,
+            constraint: error.constraint,
+            stack: error.stack
+        });
+        
         showStatus('Error al acceder al micrófono: ' + error.message, 'error');
+        
+        // Resetear flag de grabación manual
+        isManualRecording = false;
+        
+        // Liberar Wake Lock en caso de error
+        releaseWakeLock();
+        
+        // Cerrar stream si se creó pero falló la grabación
+        if (audioStream) {
+            audioStream.getTracks().forEach(track => track.stop());
+            audioStream = null;
+        }
+        
+        // Resetear UI en caso de error
+        elements.startRecordingBtn.style.display = 'flex';
+        elements.stopRecordingBtn.style.display = 'none';
+        elements.recordingIndicator.style.display = 'none';
     }
 }
 
@@ -1288,6 +2236,12 @@ function stopRecording() {
     if (mediaRecorder && mediaRecorder.state === 'recording') {
         mediaRecorder.stop();
         clearInterval(recordingInterval);
+        
+        // Resetear flag de grabación manual
+        isManualRecording = false;
+        
+        // Liberar Wake Lock cuando se detiene la grabación
+        releaseWakeLock();
         
         // Actualizar UI
         elements.stopRecordingBtn.style.display = 'none';
@@ -1348,21 +2302,50 @@ async function useAudio() {
                         console.log('✅ JSON parseado de description:', parsedDescription);
                         
                         // Extraer parada e incidencia del JSON parseado
+                        // Buscar tanto "parada" como "numero_parada"
                         if (parsedDescription.parada !== undefined && parsedDescription.parada !== null) {
                             stopNumber = String(parsedDescription.parada);
                             // Asegurar que empieza con P si no lo tiene
                             if (stopNumber && !stopNumber.toUpperCase().startsWith('P')) {
                                 stopNumber = `P${stopNumber}`;
                             }
+                        } else if (parsedDescription.numero_parada !== undefined && parsedDescription.numero_parada !== null) {
+                            stopNumber = String(parsedDescription.numero_parada);
+                            // Asegurar que empieza con P si no lo tiene
+                            if (stopNumber && !stopNumber.toUpperCase().startsWith('P')) {
+                                stopNumber = `P${stopNumber}`;
+                            }
                         }
                         
+                        // Extraer la incidencia del JSON parseado
                         if (parsedDescription.incidencia) {
-                            description = String(parsedDescription.incidencia);
+                            description = String(parsedDescription.incidencia).trim();
+                        }
+                        
+                        // Si después de parsear no tenemos descripción, NO usar el JSON completo
+                        // En su lugar, dejaremos que se use el texto transcrito o el fallback
+                        if (!description || description.trim() === '') {
+                            console.log('⚠️ No se encontró "incidencia" en el JSON parseado');
+                            description = ''; // Dejar vacío para que use el fallback
                         }
                     } catch (e) {
-                        // Si no es JSON válido, usar description como texto normal
-                        console.log('⚠️ description no es JSON válido, usando como texto:', e);
-                        description = result.description;
+                        // Si no es JSON válido, intentar extraer "incidencia" del string directamente
+                        console.log('⚠️ description no es JSON válido, intentando extraer incidencia del string:', e);
+                        
+                        // Intentar extraer el valor de "incidencia" usando regex
+                        const incidenciaMatch = result.description.match(/"incidencia"\s*:\s*"([^"]+)"/i);
+                        if (incidenciaMatch && incidenciaMatch[1]) {
+                            description = incidenciaMatch[1].trim();
+                            console.log('✅ Incidencia extraída del string JSON:', description);
+                        } else {
+                            // Si no se puede extraer, usar description como texto normal solo si no parece ser JSON
+                            if (!result.description.trim().startsWith('{')) {
+                                description = result.description.trim();
+                            } else {
+                                // Si parece JSON pero no se pudo parsear, dejar vacío para usar fallback
+                                description = '';
+                            }
+                        }
                     }
                 }
                 
@@ -1446,6 +2429,62 @@ function showAudioResults(transcribedText, stopNumber, description) {
     }
 }
 
+// Función helper para enviar incidencias en segundo plano (no bloquea la UI)
+function sendIncidenceInBackground(payload, successMessage, errorMessage, onSuccess, onError) {
+    // Mostrar mensaje de envío inmediatamente
+    if (successMessage) {
+        showStatus(successMessage.replace('enviada', 'enviando...').replace('creada', 'creando...'), 'info');
+    }
+    
+    // Ejecutar fetch en segundo plano sin bloquear la UI
+    fetch('/api/incidences', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Device-ID': deviceId
+        },
+        body: JSON.stringify(payload)
+    })
+    .then(response => {
+        console.log('📡 Respuesta del servidor:', response.status, response.statusText);
+        return response.json();
+    })
+    .then(result => {
+        console.log('📄 Resultado completo:', result);
+        
+        if (result.success) {
+            if (successMessage) {
+                showStatus(successMessage, 'success');
+            }
+            console.log('✅ Incidencia enviada exitosamente:', result);
+            
+            // Ejecutar callback de éxito si existe
+            if (onSuccess && typeof onSuccess === 'function') {
+                onSuccess(result);
+            }
+        } else {
+            const errorMsg = errorMessage || 'Error al enviar incidencia: ' + (result.error || 'Error desconocido');
+            showStatus(errorMsg, 'error');
+            console.error('❌ Error al enviar incidencia:', result);
+            
+            // Ejecutar callback de error si existe
+            if (onError && typeof onError === 'function') {
+                onError(result);
+            }
+        }
+    })
+    .catch(error => {
+        const errorMsg = errorMessage || 'Error al enviar incidencia: ' + error.message;
+        showStatus(errorMsg, 'error');
+        console.error('❌ Error al enviar incidencia:', error);
+        
+        // Ejecutar callback de error si existe
+        if (onError && typeof onError === 'function') {
+            onError(error);
+        }
+    });
+}
+
 // Crear incidencia con audio
 async function createIncidenceWithAudio(description, audioBase64) {
     console.log('🎤 createIncidenceWithAudio ejecutada');
@@ -1472,25 +2511,12 @@ async function createIncidenceWithAudio(description, audioBase64) {
             }]
         };
         
-        // Enviar incidencia
-        const response = await fetch('/api/incidences', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Device-ID': deviceId
-            },
-            body: JSON.stringify(incidencePayload)
-        });
-        
-        const result = await response.json();
-        
-        if (result.success) {
-            showStatus('Incidencia creada exitosamente con audio', 'success');
-            console.log('✅ Incidencia creada:', result);
-        } else {
-            showStatus('Error al crear incidencia: ' + result.error, 'error');
-            console.error('❌ Error al crear incidencia:', result);
-        }
+        // Enviar incidencia en segundo plano (no bloquea la UI)
+        sendIncidenceInBackground(
+            incidencePayload,
+            'Incidencia creada exitosamente con audio',
+            'Error al crear incidencia'
+        );
         
     } catch (error) {
         showStatus('Error al crear incidencia: ' + error.message, 'error');
@@ -1623,28 +2649,12 @@ async function createIncidenceWithTranscribedText(stopNumber, description, fullT
         console.log('🔗 URL de envío: /api/incidences');
         console.log('🆔 Device ID:', deviceId);
         
-        // Enviar incidencia
-        const response = await fetch('/api/incidences', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Device-ID': deviceId
-            },
-            body: JSON.stringify(incidencePayload)
-        });
-        
-        console.log('📡 Respuesta del servidor:', response.status, response.statusText);
-        
-        const result = await response.json();
-        console.log('📄 Resultado completo:', result);
-        
-        if (result.success) {
-            showStatus(`Incidencia creada para parada ${stopNumber}: ${description}`, 'success');
-            console.log('✅ Incidencia creada exitosamente:', result);
-        } else {
-            showStatus('Error al crear incidencia: ' + result.error, 'error');
-            console.error('❌ Error al crear incidencia:', result);
-        }
+        // Enviar incidencia en segundo plano (no bloquea la UI)
+        sendIncidenceInBackground(
+            incidencePayload,
+            `Incidencia creada para parada ${stopNumber}: ${description}`,
+            'Error al crear incidencia'
+        );
         
     } catch (error) {
         showStatus('Error al crear incidencia: ' + error.message, 'error');
@@ -1672,26 +2682,12 @@ async function testIncidenceCreation() {
         
         console.log('🧪 Payload de prueba:', testPayload);
         
-        // Enviar incidencia de prueba
-        const response = await fetch('/api/incidences', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Device-ID': deviceId
-            },
-            body: JSON.stringify(testPayload)
-        });
-        
-        console.log('🧪 Respuesta del servidor:', response.status, response.statusText);
-        
-        const result = await response.json();
-        console.log('🧪 Resultado completo:', result);
-        
-        if (result.success) {
-            showStatus('✅ Prueba exitosa: Incidencia creada', 'success');
-        } else {
-            showStatus('❌ Prueba fallida: ' + result.error, 'error');
-        }
+        // Enviar incidencia de prueba en segundo plano (no bloquea la UI)
+        sendIncidenceInBackground(
+            testPayload,
+            '✅ Prueba exitosa: Incidencia creada',
+            '❌ Prueba fallida'
+        );
         
     } catch (error) {
         console.error('🧪 Error en prueba:', error);
@@ -1789,11 +2785,14 @@ async function sendIncidenceFromPreview() {
         console.log('📸 currentQRData:', currentQRData);
         console.log('📸 pendingIncidenceData:', pendingIncidenceData);
         
-        // Verificar que tenemos foto
-        if (!currentPhotoData) {
-            showStatus('No hay foto para enviar', 'error');
+        // Verificar que tenemos fotos en la galería
+        if (photoGallery.length === 0 && !currentPhotoData) {
+            showStatus('No hay fotos para enviar', 'error');
             return;
         }
+        
+        // Si hay fotos en la galería, usarlas; si no, usar currentPhotoData para compatibilidad
+        const photosToSend = photoGallery.length > 0 ? photoGallery : (currentPhotoData ? [currentPhotoData] : []);
         
         // Determinar si tenemos datos de QR o audio
         const hasQRData = currentQRData && currentQRData.length > 0;
@@ -1871,13 +2870,11 @@ async function sendIncidenceFromPreview() {
             return;
         }
 
-        // Componer imágenes: usar la vista previa si existe
-        const images = [];
-        if (elements.previewImage && elements.previewImage.src && elements.previewImage.src.startsWith('data:image')) {
-            images.push({ file: elements.previewImage.src, name: 'incidence.jpg' });
-        } else if (currentPhotoData && currentPhotoData.startsWith('data:image')) {
-            images.push({ file: currentPhotoData, name: 'incidence.jpg' });
-        }
+        // Componer imágenes: usar todas las fotos de la galería
+        const images = photosToSend.map((photoData, index) => ({
+            file: photoData,
+            name: `incidence_${index + 1}.jpg`
+        }));
 
         // Usar recurso del audio/IA si está disponible, sino del QR
         let resource;
@@ -1903,25 +2900,16 @@ async function sendIncidenceFromPreview() {
         
         console.log('📋 Payload de incidencia:', payload);
 
-        const resp = await fetch('/api/incidences', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Device-ID': deviceId
-            },
-            body: JSON.stringify(payload)
-        });
-
-        const data = await resp.json();
-        if (data.success) {
-            showStatus(`Incidencia enviada correctamente (Tipo: ${selectedType})`, 'success');
-            
-            // Limpiar completamente la pantalla
-            resetUIAfterIncidenceSent();
-            
-        } else {
-            showStatus('Error al enviar incidencia: ' + (data.error || 'Desconocido'), 'error');
-        }
+        // Enviar incidencia en segundo plano (no bloquea la UI)
+        sendIncidenceInBackground(
+            payload,
+            `Incidencia enviada correctamente (Tipo: ${selectedType})`,
+            'Error al enviar incidencia',
+            () => {
+                // Limpiar completamente la pantalla después del envío exitoso
+                resetUIAfterIncidenceSent();
+            }
+        );
     } catch (err) {
         showStatus('Error inesperado al enviar incidencia: ' + err.message, 'error');
     }
@@ -2013,7 +3001,10 @@ function resetUIAfterIncidenceSent() {
     
     // Limpiar datos globales
     currentPhotoData = null;
+    imagenia = null; // Limpiar también imagenia
     currentQRData = null;
+    photoGallery = [];
+    currentPhotoIndex = 0;
     pendingIncidenceData = {
         stopNumber: null,
         description: null,
@@ -2044,12 +3035,28 @@ function resetUIAfterIncidenceSent() {
         elements.qrModal.style.display = 'none';
     }
     
-    // Limpiar vista previa de foto
+    // Limpiar vista previa de foto y galería
     if (elements.previewImage) {
         elements.previewImage.src = '';
     }
+    if (elements.photoGallery) {
+        elements.photoGallery.innerHTML = '';
+    }
     if (elements.photoPreview) {
         elements.photoPreview.style.display = 'none';
+    }
+    
+    // Ocultar botones de navegación de la galería
+    if (elements.prevPhotoBtn) {
+        elements.prevPhotoBtn.style.display = 'none';
+    }
+    if (elements.nextPhotoBtn) {
+        elements.nextPhotoBtn.style.display = 'none';
+    }
+    
+    // Actualizar contador de fotos
+    if (elements.photoCount) {
+        elements.photoCount.textContent = '0';
     }
     
     // Ocultar botón de enviar incidencia
@@ -2419,6 +3426,11 @@ function initializeAuth() {
         elements.logoutBtn.addEventListener('click', handleLogout);
     }
     
+    // Icono de usuario - mostrar login o logout según corresponda
+    if (elements.userIconBtn) {
+        elements.userIconBtn.addEventListener('click', handleUserIconClick);
+    }
+    
     if (elements.loginForm) {
         elements.loginForm.addEventListener('submit', handleLogin);
         console.log('✅ Event listener agregado para loginForm');
@@ -2560,6 +3572,19 @@ async function handleLogin(event) {
     }
 }
 
+// Manejar click en el icono de usuario
+function handleUserIconClick() {
+    if (currentUser && currentUser.username) {
+        // Usuario autenticado - hacer logout
+        handleLogout();
+    } else {
+        // Usuario no autenticado - mostrar login
+        if (elements.loginModal) {
+            elements.loginModal.style.display = 'block';
+        }
+    }
+}
+
 // Manejar logout
 async function handleLogout() {
     try {
@@ -2607,9 +3632,12 @@ function updateUIForAuthenticatedUser() {
     // Mostrar botones de acción
     elements.actionButtons.style.display = 'flex';
     
-    // Mostrar indicador de usuario
-    elements.userIndicator.style.display = 'flex';
-    elements.currentUsername.textContent = currentUser.username;
+    // Actualizar icono de usuario - mostrar tooltip con nombre de usuario
+    if (elements.userIconBtn) {
+        elements.userIconBtn.title = `Usuario: ${currentUser.username} - Clic para cerrar sesión`;
+        elements.userIconBtn.style.display = 'flex';
+    }
+    
     
     // Habilitar botones de acción
     if (elements.takePhotoBtn) {
@@ -2619,19 +3647,31 @@ function updateUIForAuthenticatedUser() {
     // Iniciar escaneo NFC automático
     startNFCAutoScan();
     
+    // Activar reconocimiento de voz automático después de autenticarse
+    setTimeout(() => {
+        activateVoiceCommandOnLoad();
+    }, 1000);
+    
     console.log('👤 UI actualizada para usuario autenticado');
 }
 
 // Actualizar UI para usuario no autenticado
 function updateUIForUnauthenticatedUser() {
+    // Detener reconocimiento de voz al cerrar sesión
+    stopVoiceCommandRecognition();
+    
     // Mostrar sección de login
     elements.loginSection.style.display = 'block';
     
     // Ocultar botones de acción
     elements.actionButtons.style.display = 'none';
     
-    // Ocultar indicador de usuario
-    elements.userIndicator.style.display = 'none';
+    // Actualizar icono de usuario - mostrar tooltip para login
+    if (elements.userIconBtn) {
+        elements.userIconBtn.title = 'Clic para iniciar sesión';
+        elements.userIconBtn.style.display = 'flex';
+    }
+    
     
     // Deshabilitar botones de acción y detener NFC
     stopNFCScanning();

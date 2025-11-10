@@ -57,7 +57,8 @@ LOGGING_CONFIG = {
 # Configuración de Business Central
 BC_CONFIG = {
     'base_url': 'https://bc220.malla.es',
-    'endpoint': '/powerbi/ODataV4/GtaskMalla_PostFijacion',
+    'endpoint': '/powerbi/ODataV4/GtaskMalla_PostFijacion',  # Endpoint para fijaciones
+    'endpoint_incidences': '/powerbi/ODataV4/GtaskMalla_PostIncidencia',  # Endpoint para incidencias (si existe)
     'company': 'Malla Publicidad',
     'credentials': {
         'username': 'debug',
@@ -95,6 +96,11 @@ def is_valid_file_size(file_size):
 # Función para obtener la URL completa de Business Central
 def get_bc_url():
     return f"{BC_CONFIG['base_url']}{BC_CONFIG['endpoint']}"
+
+# Función para obtener la URL completa de Business Central para incidencias
+def get_bc_incidences_url():
+    endpoint = BC_CONFIG.get('endpoint_incidences', BC_CONFIG['endpoint'])  # Fallback a endpoint de fijaciones
+    return f"{BC_CONFIG['base_url']}{endpoint}"
 
 # Función para crear autenticación básica
 def get_bc_auth_header():
