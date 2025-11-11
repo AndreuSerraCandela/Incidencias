@@ -280,6 +280,24 @@
             </div>
         </div>
 
+        <!-- Modal de grabación automática -->
+        <div id="autoRecordingModal" class="modal" style="display: none; z-index: 10000;">
+            <div class="modal-content" style="max-width: 400px; text-align: center;">
+                <div class="modal-body" style="padding: 30px;">
+                    <div style="font-size: 48px; color: #dc3545; margin-bottom: 20px;">
+                        <i class="fas fa-microphone-alt" style="animation: pulse 1.5s infinite;"></i>
+                    </div>
+                    <h3 style="margin-bottom: 15px; color: #333;">Grabando Audio</h3>
+                    <p style="color: #666; margin-bottom: 20px;">
+                        Habla ahora. La grabación se detendrá automáticamente cuando dejes de hablar.
+                    </p>
+                    <div id="autoRecordingStatus" style="color: #28a745; font-weight: bold; margin-top: 15px;">
+                        <i class="fas fa-circle" style="animation: blink 1s infinite;"></i> Escuchando...
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Modal de grabación de audio -->
         <div id="audioModal" class="modal" style="display: none;">
             <div class="modal-content">

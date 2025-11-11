@@ -2051,7 +2051,7 @@ def extract_stop_info(text):
     # (algunos modelos de LM Studio pueden no ser multimodales)
     # Ajustes para Gemma 3 27B: modelo más grande requiere más tokens y tiempo
     payload = {
-        "model": "local-model",  # LM Studio usa este nombre genérico
+        "model": "qwen/qwen3-4b-2507",  # LM Studio usa este nombre genérico
         "messages": messages,
         "temperature": 0.2,  # Temperatura más baja para respuestas más consistentes con Gemma
         "max_tokens": 800  # Aumentar tokens para Gemma 3 27B (modelo más grande)
@@ -2427,7 +2427,7 @@ def process_image_with_lm_studio(image_base64):
         # (algunos modelos de LM Studio pueden no ser multimodales)
         # Ajustes para Gemma 3 27B: modelo más grande requiere más tokens y tiempo
         payload = {
-            "model": "local-model",  # LM Studio usa este nombre genérico
+            "model": "google/gemma-3-27b",  # LM Studio usa este nombre genérico
             "messages": messages,
             "temperature": 0.2,  # Temperatura más baja para respuestas más consistentes con Gemma
             "max_tokens": 800  # Aumentar tokens para Gemma 3 27B (modelo más grande)

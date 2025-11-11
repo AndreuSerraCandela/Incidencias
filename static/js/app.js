@@ -18,6 +18,11 @@ let audioChunks = [];
 let audioBlob = null;
 let recordingStartTime = null;
 let recordingInterval = null;
+let audioContext = null; // Para detección de silencio
+let analyser = null; // Para analizar el audio
+let silenceDetectionInterval = null; // Intervalo para detectar silencio
+let isAutoRecording = false; // Indica si la grabación es automática (con detección de silencio)
+let lastSoundTime = null; // Última vez que se detectó sonido
 
 // Variables para almacenar datos de incidencia
 let pendingIncidenceData = {
@@ -82,6 +87,8 @@ document.addEventListener('DOMContentLoaded', function() {
         // Elementos del modal de audio
         audioModal: document.getElementById('audioModal'),
         closeAudioModal: document.getElementById('closeAudioModal'),
+        autoRecordingModal: document.getElementById('autoRecordingModal'),
+        autoRecordingStatus: document.getElementById('autoRecordingStatus'),
         startRecordingBtn: document.getElementById('startRecordingBtn'),
         stopRecordingBtn: document.getElementById('stopRecordingBtn'),
         playAudioBtn: document.getElementById('playAudioBtn'),
@@ -2065,8 +2072,18 @@ async function requestWakeLock() {
             console.log('✅ Wake Lock activado - Pantalla se mantendrá activa');
             
             // Manejar cuando el wake lock se libera (por ejemplo, cuando el usuario cambia de pestaña)
-            wakeLock.addEventListener('release', () => {
+            wakeLock.addEventListener('release', async () => {
                 console.log('⚠️ Wake Lock liberado');
+                // Si hay grabación automática en curso, intentar reactivarlo
+                if (isAutoRecording || (mediaRecorder && mediaRecorder.state === 'recording')) {
+                    console.log('🔄 Intentando reactivar wake lock durante grabación...');
+                    try {
+                        wakeLock = null; // Resetear antes de reactivar
+                        await requestWakeLock();
+                    } catch (error) {
+                        console.error('❌ No se pudo reactivar wake lock:', error);
+                    }
+                }
             });
         } else {
             console.log('⚠️ Wake Lock no soportado en este navegador');
@@ -2098,10 +2115,21 @@ async function releaseWakeLock() {
     }
 }
 
-// Manejar cuando la página se oculta (liberar wake lock)
+// Manejar cuando la página se oculta (liberar wake lock solo si no hay grabación en curso)
 document.addEventListener('visibilitychange', async () => {
     if (document.hidden && wakeLock) {
+        // NO liberar wake lock si hay grabación automática en curso
+        if (isAutoRecording || (mediaRecorder && mediaRecorder.state === 'recording')) {
+            console.log('⚠️ Página oculta pero manteniendo wake lock durante grabación...');
+            return;
+        }
         await releaseWakeLock();
+    } else if (!document.hidden && !wakeLock) {
+        // Si la página vuelve a ser visible y no hay wake lock, reactivarlo si hay grabación en curso
+        if (isAutoRecording || (mediaRecorder && mediaRecorder.state === 'recording')) {
+            console.log('🔄 Reactivando wake lock después de volver a la página...');
+            await requestWakeLock();
+        }
     }
 });
 
@@ -2146,6 +2174,12 @@ function initVoiceCommandRecognition() {
     // No activar si se está grabando manualmente
     if (isManualRecording) {
         console.log('ℹ️ Grabación manual en curso - No se activa reconocimiento de voz');
+        return;
+    }
+    
+    // No activar si hay grabación automática en curso
+    if (isAutoRecording) {
+        console.log('ℹ️ Grabación automática en curso - No se activa reconocimiento de voz');
         return;
     }
     
@@ -2201,23 +2235,14 @@ function initVoiceCommandRecognition() {
             );
             
             if (commandDetected) {
-                console.log('✅ Comando reconocido - Activando grabación de audio...');
+                console.log('✅ Comando reconocido - Iniciando grabación automática...');
                 stopVoiceCommandRecognition();
                 
-                // Esperar un poco antes de activar la grabación
+                // Iniciar grabación automática directamente (sin abrir modal)
                 setTimeout(() => {
-                    if (elements.recordAudioBtn && isAuthenticated) {
-                        elements.recordAudioBtn.click();
-                        
-                        // Iniciar la grabación automáticamente después de abrir el modal
-                        setTimeout(() => {
-                            if (elements.startRecordingBtn && 
-                                elements.startRecordingBtn.offsetParent !== null &&
-                                !elements.startRecordingBtn.disabled) {
-                                console.log('🎤 Iniciando grabación automáticamente...');
-                                elements.startRecordingBtn.click();
-                            }
-                        }, 500);
+                    if (isAuthenticated) {
+                        console.log('🎤 Iniciando grabación automática con detección de silencio...');
+                        startAutoRecording(); // Función para grabación automática
                     }
                 }, 300);
             } else {
@@ -2247,6 +2272,7 @@ function initVoiceCommandRecognition() {
             // NO reactivar si está deshabilitado o hay condiciones que lo impiden
             if (voiceRecognitionDisabled || 
                 isManualRecording || 
+                isAutoRecording || // No reactivar si hay grabación automática en curso
                 (elements.audioModal && elements.audioModal.style.display === 'block') ||
                 (mediaRecorder && mediaRecorder.state === 'recording')) {
                 console.log('🚫 No se reactiva reconocimiento de voz');
@@ -2266,6 +2292,7 @@ function initVoiceCommandRecognition() {
             setTimeout(() => {
                 if (!voiceRecognitionDisabled &&
                     !isManualRecording && 
+                    !isAutoRecording && // Asegurar que no hay grabación automática
                     (!elements.audioModal || elements.audioModal.style.display === 'none') &&
                     !isListeningForCommand &&
                     isAuthenticated &&
@@ -2356,6 +2383,7 @@ function activateVoiceCommandOnLoad() {
         if (isAuthenticated && 
             !isListeningForCommand && 
             !isManualRecording &&
+            !isAutoRecording &&
             !voiceRecognitionDisabled &&
             (!elements.audioModal || elements.audioModal.style.display === 'none') &&
             (!mediaRecorder || mediaRecorder.state !== 'recording')) {
@@ -2366,6 +2394,7 @@ function activateVoiceCommandOnLoad() {
                 isAuthenticated,
                 isListeningForCommand,
                 isManualRecording,
+                isAutoRecording,
                 voiceRecognitionDisabled,
                 audioModalOpen: elements.audioModal && elements.audioModal.style.display === 'block',
                 recording: mediaRecorder && mediaRecorder.state === 'recording'
@@ -2377,6 +2406,28 @@ function activateVoiceCommandOnLoad() {
 // ========================================
 // FUNCIONES DE GRABACIÓN DE AUDIO
 // ========================================
+
+// Función helper para obtener el mejor mimeType para MediaRecorder en el dispositivo
+function getBestAudioMimeType() {
+    const types = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/ogg;codecs=opus',
+        'audio/ogg',
+        'audio/mp4',
+        'audio/wav'
+    ];
+    
+    for (const type of types) {
+        if (MediaRecorder.isTypeSupported(type)) {
+            console.log(`✅ MimeType soportado: ${type}`);
+            return type;
+        }
+    }
+    
+    console.log('⚠️ No se encontró mimeType específico, usando por defecto');
+    return ''; // Usar el por defecto del navegador
+}
 
 // Iniciar grabación de audio
 function startAudioRecording() {
@@ -2451,10 +2502,545 @@ function resetAudioUI() {
     audioBlob = null;
     mediaRecorder = null;
     
+    // Detener detección de silencio
+    stopSilenceDetection();
+    
+    // Cerrar AudioContext
+    if (audioContext) {
+        audioContext.close().catch(e => console.log('⚠️ Error al cerrar audioContext:', e));
+        audioContext = null;
+        analyser = null;
+    }
+    
+    // Resetear flags
+    isAutoRecording = false;
+    
     // Cerrar stream si existe
     if (audioStream) {
         audioStream.getTracks().forEach(track => track.stop());
         audioStream = null;
+    }
+}
+
+// Detectar silencio en el audio
+function startSilenceDetection() {
+    if (!audioStream || !audioContext || !analyser) {
+        console.log('⚠️ No se puede iniciar detección de silencio: falta stream o audioContext');
+        return;
+    }
+    
+    console.log('🔇 Iniciando detección de silencio...');
+    
+    // Configuración de detección de silencio (ajustada para móviles)
+    // Umbral más bajo y duración más larga para evitar detenciones prematuras
+    const SILENCE_THRESHOLD = 20; // Umbral de volumen más bajo (ajustable)
+    const SILENCE_DURATION = 3000; // 3 segundos de silencio para detener (más tiempo)
+    const MIN_RECORDING_TIME = 1000; // Mínimo 1 segundo de grabación antes de detectar silencio
+    const CHECK_INTERVAL = 100; // Verificar cada 100ms
+    
+    lastSoundTime = Date.now();
+    const recordingStartTime = Date.now();
+    
+    silenceDetectionInterval = setInterval(() => {
+        if (!analyser || !mediaRecorder || mediaRecorder.state !== 'recording') {
+            stopSilenceDetection();
+            return;
+        }
+        
+        // No detectar silencio hasta que haya pasado el tiempo mínimo de grabación
+        const elapsedTime = Date.now() - recordingStartTime;
+        if (elapsedTime < MIN_RECORDING_TIME) {
+            return; // Continuar grabando sin detectar silencio
+        }
+        
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(dataArray);
+        
+        // Calcular el volumen promedio
+        const average = dataArray.reduce((sum, value) => sum + value, 0) / dataArray.length;
+        
+        // Si hay sonido (volumen por encima del umbral)
+        if (average > SILENCE_THRESHOLD) {
+            lastSoundTime = Date.now();
+        } else {
+            // Verificar si ha pasado suficiente tiempo sin sonido
+            const silenceDuration = Date.now() - lastSoundTime;
+            if (silenceDuration >= SILENCE_DURATION && lastSoundTime !== null) {
+                console.log('🔇 Silencio detectado durante', silenceDuration, 'ms - Deteniendo grabación...');
+                
+                // Actualizar estado en el modal
+                if (elements.autoRecordingStatus) {
+                    elements.autoRecordingStatus.innerHTML = '<i class="fas fa-check-circle"></i> Procesando audio...';
+                }
+                
+                stopSilenceDetection();
+                stopRecording();
+                
+                // Procesar el audio automáticamente después de un breve delay
+                setTimeout(() => {
+                    processAutoRecordedAudio();
+                }, 500);
+            }
+        }
+    }, CHECK_INTERVAL);
+}
+
+// Detener detección de silencio
+function stopSilenceDetection() {
+    if (silenceDetectionInterval) {
+        clearInterval(silenceDetectionInterval);
+        silenceDetectionInterval = null;
+        console.log('🛑 Detección de silencio detenida');
+    }
+    lastSoundTime = null;
+}
+
+// Procesar audio grabado automáticamente
+async function processAutoRecordedAudio() {
+    if (!audioBlob) {
+        console.log('⚠️ No hay audio para procesar');
+        return;
+    }
+    
+    try {
+        console.log('🤖 Procesando audio automáticamente...');
+        
+        // Actualizar estado en el modal
+        if (elements.autoRecordingStatus) {
+            elements.autoRecordingStatus.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Procesando audio...';
+        }
+        
+        showStatus('Procesando audio...', 'info');
+        
+        // Convertir audio a texto usando Whisper (backend)
+        const result = await convertAudioToText(audioBlob);
+        console.log('🎤 Resultado de Whisper:', result);
+        
+        if (result && result.success) {
+            let stopNumber = null;
+            let description = '';
+            let transcribedText = result.transcribed_text || '';
+            
+            // Verificar si description contiene un JSON string que necesita ser parseado
+            if (result.description && typeof result.description === 'string') {
+                try {
+                    // Intentar parsear el JSON dentro de description
+                    const parsedDescription = JSON.parse(result.description);
+                    console.log('✅ JSON parseado de description:', parsedDescription);
+                    
+                    // Extraer parada e incidencia del JSON parseado
+                    if (parsedDescription.parada !== undefined && parsedDescription.parada !== null) {
+                        stopNumber = String(parsedDescription.parada);
+                        if (stopNumber && !stopNumber.toUpperCase().startsWith('P')) {
+                            stopNumber = `P${stopNumber}`;
+                        }
+                    } else if (parsedDescription.numero_parada !== undefined && parsedDescription.numero_parada !== null) {
+                        stopNumber = String(parsedDescription.numero_parada);
+                        if (stopNumber && !stopNumber.toUpperCase().startsWith('P')) {
+                            stopNumber = `P${stopNumber}`;
+                        }
+                    }
+                    
+                    // Extraer la incidencia del JSON parseado
+                    if (parsedDescription.incidencia) {
+                        description = String(parsedDescription.incidencia).trim();
+                    }
+                    
+                    if (!description || description.trim() === '') {
+                        console.log('⚠️ No se encontró "incidencia" en el JSON parseado');
+                        description = '';
+                    }
+                } catch (e) {
+                    // Si no es JSON válido, intentar extraer "incidencia" del string directamente
+                    console.log('⚠️ description no es JSON válido, intentando extraer incidencia del string:', e);
+                    
+                    const incidenciaMatch = result.description.match(/"incidencia"\s*:\s*"([^"]+)"/i);
+                    if (incidenciaMatch && incidenciaMatch[1]) {
+                        description = incidenciaMatch[1].trim();
+                        console.log('✅ Incidencia extraída del string JSON:', description);
+                    } else {
+                        if (!result.description.trim().startsWith('{')) {
+                            description = result.description.trim();
+                        } else {
+                            description = '';
+                        }
+                    }
+                }
+            }
+            
+            // Si no se encontró stopNumber en el JSON, usar el del resultado o extraer del texto
+            if (!stopNumber) {
+                if (result.stop_number !== undefined && result.stop_number !== null) {
+                    stopNumber = String(result.stop_number);
+                    if (!stopNumber.toUpperCase().startsWith('P')) {
+                        stopNumber = `P${stopNumber}`;
+                    }
+                } else if (transcribedText) {
+                    // Intentar extraer del texto transcrito como fallback
+                    const extracted = extractStopInfo(transcribedText);
+                    stopNumber = extracted.stopNumber;
+                    if (!description) {
+                        description = extracted.description;
+                    }
+                }
+            }
+            
+            // Si no hay descripción, usar el texto transcrito o un valor por defecto
+            if (!description || description.trim() === '') {
+                description = transcribedText || 'Incidencia reportada por audio';
+            }
+            
+            console.log('📝 Texto transcrito:', transcribedText);
+            console.log('🚌 Número de parada extraído:', stopNumber);
+            console.log('📋 Descripción extraída:', description);
+            
+            // Mostrar resultados en la sección de QR (unificar flujo)
+            showAudioResults(transcribedText, stopNumber, description);
+            
+            // Almacenar datos para envío posterior
+            pendingIncidenceData = {
+                stopNumber: stopNumber || null,
+                description: description,
+                fullText: transcribedText || description,
+                hasAudio: true,
+                hasAI: false
+            };
+            
+            showStatus('✅ Audio procesado correctamente. Puedes enviar la incidencia.', 'success');
+            console.log('✅ Datos de audio almacenados:', pendingIncidenceData);
+            
+            // Actualizar botón de reportar incidencia
+            updateReportButton();
+            
+            // Ocultar modal de grabación automática
+            if (elements.autoRecordingModal) {
+                elements.autoRecordingModal.style.display = 'none';
+            }
+            
+        } else {
+            console.error('❌ No se pudo convertir el audio a texto');
+            showStatus('No se pudo convertir el audio a texto', 'error');
+            
+            // Ocultar modal de grabación automática
+            if (elements.autoRecordingModal) {
+                elements.autoRecordingModal.style.display = 'none';
+            }
+        }
+        
+        // Resetear flag de grabación automática
+        isAutoRecording = false;
+        
+        // Liberar Wake Lock después de procesar el audio (solo en modo automático)
+        releaseWakeLock();
+        
+        // Habilitar reconocimiento de voz de nuevo
+        voiceRecognitionDisabled = false;
+        
+        // Reactivar reconocimiento de voz después de un tiempo
+        setTimeout(() => {
+            if (isAuthenticated && !isManualRecording && 
+                (!mediaRecorder || mediaRecorder.state !== 'recording') &&
+                (!elements.audioModal || elements.audioModal.style.display === 'none')) {
+                console.log('🔄 Reactivando reconocimiento de voz después de procesar audio...');
+                initVoiceCommandRecognition();
+            }
+        }, 3000);
+        
+    } catch (error) {
+        console.error('❌ Error al procesar audio automáticamente:', error);
+        showStatus('Error al procesar el audio: ' + error.message, 'error');
+        
+        // Ocultar modal de grabación automática
+        if (elements.autoRecordingModal) {
+            elements.autoRecordingModal.style.display = 'none';
+        }
+        
+        isAutoRecording = false;
+        voiceRecognitionDisabled = false;
+        
+        // Liberar Wake Lock después de procesar el audio (incluso si hay error)
+        releaseWakeLock();
+        
+        // Reactivar reconocimiento de voz incluso si hay error
+        setTimeout(() => {
+            if (isAuthenticated && !isManualRecording && 
+                (!mediaRecorder || mediaRecorder.state !== 'recording') &&
+                (!elements.audioModal || elements.audioModal.style.display === 'none')) {
+                console.log('🔄 Reactivando reconocimiento de voz después de error...');
+                initVoiceCommandRecognition();
+            }
+        }, 3000);
+    }
+}
+
+// Iniciar grabación automática (sin abrir modal)
+async function startAutoRecording() {
+    try {
+        console.log('🎤 ===== INICIANDO GRABACIÓN AUTOMÁTICA =====');
+        
+        // Verificar si ya hay una grabación en curso
+        if (mediaRecorder && mediaRecorder.state === 'recording') {
+            console.log('⚠️ Ya hay una grabación en curso');
+            return;
+        }
+        
+        // Establecer flag de grabación automática
+        isAutoRecording = true;
+        
+        // Asegurarse de que el reconocimiento de voz esté completamente deshabilitado
+        voiceRecognitionDisabled = true;
+        stopVoiceCommandRecognition();
+        
+        // Cerrar cualquier stream anterior
+        if (audioStream) {
+            console.log('🔄 Cerrando stream anterior...');
+            audioStream.getTracks().forEach(track => {
+                track.stop();
+            });
+            audioStream = null;
+        }
+        
+        // Cerrar AudioContext anterior si existe
+        if (audioContext) {
+            try {
+                await audioContext.close();
+            } catch (e) {
+                console.log('⚠️ Error al cerrar audioContext anterior:', e);
+            }
+            audioContext = null;
+        }
+        
+        console.log('🎤 Solicitando acceso al micrófono...');
+        
+        // Activar Wake Lock
+        await requestWakeLock();
+        
+        // Solicitar acceso al micrófono
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true
+            }
+        });
+        
+        audioStream = stream;
+        console.log('✅ Acceso al micrófono obtenido');
+        
+        // Crear AudioContext para detección de silencio
+        try {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256;
+            const source = audioContext.createMediaStreamSource(stream);
+            source.connect(analyser);
+            console.log('✅ AudioContext creado para detección de silencio');
+        } catch (e) {
+            console.error('⚠️ Error al crear AudioContext:', e);
+            // Continuar sin detección de silencio
+        }
+        
+        // Obtener el mejor mimeType para este dispositivo
+        const mimeType = getBestAudioMimeType();
+        const options = mimeType ? { mimeType: mimeType } : {};
+        
+        console.log('🎤 Creando MediaRecorder con opciones:', options);
+        mediaRecorder = new MediaRecorder(stream, options);
+        audioChunks = [];
+        
+        // Variable para almacenar el intervalo de verificación del wake lock
+        let wakeLockCheckInterval = null;
+        
+        mediaRecorder.ondataavailable = (event) => {
+            if (event.data && event.data.size > 0) {
+                console.log(`📦 Datos de audio recibidos: ${event.data.size} bytes`);
+                audioChunks.push(event.data);
+            } else {
+                console.log('⚠️ Evento ondataavailable sin datos o tamaño 0');
+            }
+        };
+        
+        mediaRecorder.onstop = () => {
+            console.log('🛑 MediaRecorder detenido');
+            console.log(`📦 Total de chunks: ${audioChunks.length}, tamaño total: ${audioChunks.reduce((sum, chunk) => sum + chunk.size, 0)} bytes`);
+            
+            // Determinar el tipo de Blob basado en el mimeType usado
+            let blobType = 'audio/webm'; // Por defecto
+            if (mimeType) {
+                if (mimeType.includes('webm')) {
+                    blobType = 'audio/webm';
+                } else if (mimeType.includes('ogg')) {
+                    blobType = 'audio/ogg';
+                } else if (mimeType.includes('mp4')) {
+                    blobType = 'audio/mp4';
+                } else if (mimeType.includes('wav')) {
+                    blobType = 'audio/wav';
+                }
+            }
+            
+            audioBlob = new Blob(audioChunks, { type: blobType });
+            console.log(`✅ Blob creado: tipo=${blobType}, tamaño=${audioBlob.size} bytes`);
+            
+            // Detener verificación periódica del wake lock
+            if (wakeLockCheckInterval) {
+                clearInterval(wakeLockCheckInterval);
+                wakeLockCheckInterval = null;
+            }
+            
+            // Detener detección de silencio
+            stopSilenceDetection();
+            
+            // Cerrar AudioContext
+            if (audioContext) {
+                audioContext.close().catch(e => console.log('⚠️ Error al cerrar audioContext:', e));
+                audioContext = null;
+                analyser = null;
+            }
+            
+            // Detener el stream
+            if (audioStream) {
+                audioStream.getTracks().forEach(track => track.stop());
+                audioStream = null;
+            }
+            
+            // Resetear flag de grabación manual
+            isManualRecording = false;
+            
+            // NO liberar Wake Lock aquí en modo automático - se liberará después de procesar el audio
+            // Solo liberar si NO es grabación automática
+            if (!isAutoRecording) {
+                releaseWakeLock();
+            }
+        };
+        
+        mediaRecorder.onerror = (event) => {
+            console.error('❌ Error en MediaRecorder:', event.error);
+            showStatus('Error durante la grabación: ' + (event.error?.message || 'Error desconocido'), 'error');
+            stopSilenceDetection();
+            isAutoRecording = false;
+            voiceRecognitionDisabled = false;
+            
+            // Detener verificación periódica del wake lock
+            if (wakeLockCheckInterval) {
+                clearInterval(wakeLockCheckInterval);
+                wakeLockCheckInterval = null;
+            }
+            
+            // Liberar Wake Lock en caso de error
+            releaseWakeLock();
+        };
+        
+        // Iniciar grabación con timeslice para asegurar que se emitan eventos regularmente
+        // En móviles, esto es crítico para capturar todos los datos
+        const timeslice = 250; // Emitir datos cada 250ms
+        mediaRecorder.start(timeslice);
+        recordingStartTime = Date.now();
+        
+        console.log(`🎤 Grabación iniciada con timeslice de ${timeslice}ms`);
+        
+        // Verificar que el wake lock esté activo
+        if (!wakeLock) {
+            console.log('⚠️ Wake Lock no está activo, reactivando...');
+            await requestWakeLock();
+        }
+        
+        // Configurar verificación periódica del wake lock durante la grabación
+        wakeLockCheckInterval = setInterval(async () => {
+            if (isAutoRecording && mediaRecorder && mediaRecorder.state === 'recording') {
+                // Verificar si el wake lock está activo
+                // El wake lock puede liberarse automáticamente, así que verificamos si existe y no está liberado
+                let wakeLockActive = false;
+                try {
+                    if (wakeLock) {
+                        // Intentar acceder a la propiedad released (puede no existir en algunos navegadores)
+                        wakeLockActive = wakeLock && !wakeLock.released;
+                    }
+                } catch (e) {
+                    // Si hay error al verificar, asumir que no está activo
+                    wakeLockActive = false;
+                }
+                
+                if (!wakeLock || !wakeLockActive) {
+                    console.log('⚠️ Wake Lock perdido durante grabación, reactivando...');
+                    try {
+                        wakeLock = null;
+                        await requestWakeLock();
+                        console.log('✅ Wake Lock reactivado correctamente');
+                    } catch (error) {
+                        console.error('❌ Error al reactivar wake lock:', error);
+                    }
+                }
+            } else {
+                // Detener verificación si ya no hay grabación automática
+                if (wakeLockCheckInterval) {
+                    clearInterval(wakeLockCheckInterval);
+                    wakeLockCheckInterval = null;
+                }
+            }
+        }, 2000); // Verificar cada 2 segundos
+        
+        // Mostrar modal de grabación automática
+        if (elements.autoRecordingModal) {
+            elements.autoRecordingModal.style.display = 'block';
+            if (elements.autoRecordingStatus) {
+                elements.autoRecordingStatus.innerHTML = '<i class="fas fa-circle" style="animation: blink 1s infinite;"></i> Escuchando...';
+            }
+        }
+        
+        // Mostrar indicador de grabación en el status
+        showStatus('🎤 Grabando... Habla ahora. La grabación se detendrá automáticamente cuando dejes de hablar.', 'info');
+        
+        // Iniciar detección de silencio después de un breve delay
+        if (audioContext && analyser) {
+            setTimeout(() => {
+                startSilenceDetection();
+            }, 500);
+        }
+        
+        console.log('🎤 Grabación automática iniciada correctamente');
+        
+    } catch (error) {
+        console.error('❌ Error al iniciar grabación automática:', error);
+        showStatus('Error al acceder al micrófono: ' + error.message, 'error');
+        
+        // Resetear flags
+        isManualRecording = false;
+        isAutoRecording = false;
+        voiceRecognitionDisabled = false;
+        
+        // Ocultar modal de grabación automática
+        if (elements.autoRecordingModal) {
+            elements.autoRecordingModal.style.display = 'none';
+        }
+        
+        // Detener detección de silencio
+        stopSilenceDetection();
+        
+        // Liberar Wake Lock en caso de error
+        releaseWakeLock();
+        
+        // Cerrar stream si se creó pero falló la grabación
+        if (audioStream) {
+            audioStream.getTracks().forEach(track => track.stop());
+            audioStream = null;
+        }
+        
+        // Cerrar AudioContext
+        if (audioContext) {
+            audioContext.close().catch(e => console.log('⚠️ Error al cerrar audioContext:', e));
+            audioContext = null;
+            analyser = null;
+        }
+        
+        // Reactivar reconocimiento de voz después de un tiempo en caso de error
+        setTimeout(() => {
+            if (isAuthenticated && !isManualRecording && 
+                (!mediaRecorder || mediaRecorder.state !== 'recording') &&
+                (!elements.audioModal || elements.audioModal.style.display === 'none')) {
+                console.log('🔄 Reactivando reconocimiento de voz después de error...');
+                initVoiceCommandRecognition();
+            }
+        }, 2000);
     }
 }
 
@@ -2510,18 +3096,43 @@ async function startRecording() {
             }))
         });
         
-        mediaRecorder = new MediaRecorder(stream);
+        // Obtener el mejor mimeType para este dispositivo
+        const mimeType = getBestAudioMimeType();
+        const options = mimeType ? { mimeType: mimeType } : {};
+        
+        console.log('🎤 Creando MediaRecorder con opciones:', options);
+        mediaRecorder = new MediaRecorder(stream, options);
         audioChunks = [];
         
         mediaRecorder.ondataavailable = (event) => {
             if (event.data && event.data.size > 0) {
+                console.log(`📦 Datos de audio recibidos: ${event.data.size} bytes`);
                 audioChunks.push(event.data);
+            } else {
+                console.log('⚠️ Evento ondataavailable sin datos o tamaño 0');
             }
         };
         
         mediaRecorder.onstop = () => {
             console.log('🛑 MediaRecorder detenido');
-            audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+            console.log(`📦 Total de chunks: ${audioChunks.length}, tamaño total: ${audioChunks.reduce((sum, chunk) => sum + chunk.size, 0)} bytes`);
+            
+            // Determinar el tipo de Blob basado en el mimeType usado
+            let blobType = 'audio/webm'; // Por defecto
+            if (mimeType) {
+                if (mimeType.includes('webm')) {
+                    blobType = 'audio/webm';
+                } else if (mimeType.includes('ogg')) {
+                    blobType = 'audio/ogg';
+                } else if (mimeType.includes('mp4')) {
+                    blobType = 'audio/mp4';
+                } else if (mimeType.includes('wav')) {
+                    blobType = 'audio/wav';
+                }
+            }
+            
+            audioBlob = new Blob(audioChunks, { type: blobType });
+            console.log(`✅ Blob creado: tipo=${blobType}, tamaño=${audioBlob.size} bytes`);
             const audioUrl = URL.createObjectURL(audioBlob);
             elements.audioPlayer.src = audioUrl;
             
@@ -2549,8 +3160,13 @@ async function startRecording() {
             showStatus('Error durante la grabación: ' + (event.error?.message || 'Error desconocido'), 'error');
         };
         
-        mediaRecorder.start();
+        // Iniciar grabación con timeslice para asegurar que se emitan eventos regularmente
+        // En móviles, esto es crítico para capturar todos los datos
+        const timeslice = 250; // Emitir datos cada 250ms
+        mediaRecorder.start(timeslice);
         recordingStartTime = Date.now();
+        
+        console.log(`🎤 Grabación iniciada con timeslice de ${timeslice}ms`);
         
         // Actualizar UI
         elements.startRecordingBtn.style.display = 'none';
@@ -2598,15 +3214,20 @@ function stopRecording() {
         mediaRecorder.stop();
         clearInterval(recordingInterval);
         
+        // Detener detección de silencio
+        stopSilenceDetection();
+        
         // Resetear flag de grabación manual
         isManualRecording = false;
         
         // Liberar Wake Lock cuando se detiene la grabación
         releaseWakeLock();
         
-        // Actualizar UI
-        elements.stopRecordingBtn.style.display = 'none';
-        elements.recordingIndicator.style.display = 'none';
+        // Actualizar UI solo si no es modo automático
+        if (!isAutoRecording) {
+            elements.stopRecordingBtn.style.display = 'none';
+            elements.recordingIndicator.style.display = 'none';
+        }
         
         console.log('🎤 Grabación detenida');
     }
