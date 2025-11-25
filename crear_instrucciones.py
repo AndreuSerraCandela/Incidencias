@@ -15,10 +15,11 @@ title.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
 # Agregar introducción
 intro = doc.add_paragraph()
-intro.add_run('Esta aplicación permite reportar incidencias en paradas de autobús utilizando tres métodos diferentes:').bold = True
+intro.add_run('Esta aplicación permite reportar incidencias en paradas de autobús utilizando cuatro métodos diferentes:').bold = True
 doc.add_paragraph('1. Escaneo de etiquetas NFC')
 doc.add_paragraph('2. Grabación de audio')
-doc.add_paragraph('3. Procesamiento de imágenes con IA')
+doc.add_paragraph('3. Elementos cercanos (mapa interactivo)')
+doc.add_paragraph('4. Procesamiento de imágenes con IA')
 
 doc.add_paragraph()  # Espacio
 
@@ -101,9 +102,69 @@ doc.add_paragraph('• El audio se procesa en el servidor y no se almacena perma
 doc.add_page_break()
 
 # ============================================
-# SECCIÓN 3: IA Imagen
+# SECCIÓN 3: Elementos Cercanos
 # ============================================
-doc.add_heading('3. Reportar Incidencia con Procesamiento de Imagen con IA', 1)
+doc.add_heading('3. Reportar Incidencia con Elementos Cercanos', 1)
+
+doc.add_paragraph('Puedes ver en un mapa interactivo todos los elementos (mobiliario urbano y recursos) que se encuentran cerca de tu ubicación actual y seleccionar uno para crear una incidencia.')
+
+doc.add_heading('Pasos a seguir:', 2)
+doc.add_paragraph('1. Haz clic en el botón "Elementos Cerca" que se encuentra debajo del botón "Grabar Audio".', style='List Number')
+doc.add_paragraph('2. La aplicación solicitará permiso para acceder a tu ubicación. Acepta el permiso cuando el navegador lo solicite.', style='List Number')
+doc.add_paragraph('3. Se abrirá un mapa interactivo que muestra:', style='List Number')
+
+sub_list = doc.add_paragraph()
+sub_list.add_run('   • Tu ubicación actual (marcador azul)').italic = True
+sub_list = doc.add_paragraph()
+sub_list.add_run('   • Un círculo de 100 metros de radio alrededor de tu posición').italic = True
+sub_list = doc.add_paragraph()
+sub_list.add_run('   • Todos los elementos cercanos (mobiliario urbano y recursos) dentro del radio de 100 metros').italic = True
+
+doc.add_paragraph('4. Los elementos se muestran con marcadores de colores:', style='List Number')
+
+sub_list = doc.add_paragraph()
+sub_list.add_run('   • Marcadores rojos: Mobiliario urbano (paradas de autobús, bancos, etc.)').italic = True
+sub_list = doc.add_paragraph()
+sub_list.add_run('   • Marcadores verdes: Recursos (señalización, campañas, etc.)').italic = True
+
+doc.add_paragraph('5. Haz clic en cualquier marcador del mapa para ver los detalles del elemento.', style='List Number')
+doc.add_paragraph('6. Se abrirá una ventana emergente (popup) con información del elemento:', style='List Number')
+
+sub_list = doc.add_paragraph()
+sub_list.add_run('   • Número de emplazamiento o recurso').italic = True
+sub_list = doc.add_paragraph()
+sub_list.add_run('   • Descripción del elemento').italic = True
+sub_list = doc.add_paragraph()
+sub_list.add_run('   • Dirección (si está disponible)').italic = True
+sub_list = doc.add_paragraph()
+sub_list.add_run('   • Tipo de elemento').italic = True
+
+doc.add_paragraph('7. Si deseas crear una incidencia para ese elemento, haz clic en el botón "Crear Incidencia" dentro del popup.', style='List Number')
+doc.add_paragraph('8. Se cerrará el mapa y se abrirá automáticamente la cámara para capturar una foto de la incidencia.', style='List Number')
+doc.add_paragraph('9. Captura una foto de la incidencia usando el botón "Capturar Foto" o "Importar Foto".', style='List Number')
+doc.add_paragraph('10. Revisa la foto y completa los campos necesarios (tipo de incidencia, descripción, etc.).', style='List Number')
+doc.add_paragraph('11. Haz clic en "Enviar Incidencia" para completar el reporte.', style='List Number')
+
+doc.add_heading('Consejos para usar el mapa:', 2)
+doc.add_paragraph('• Asegúrate de tener una buena señal GPS para que tu ubicación sea precisa.')
+doc.add_paragraph('• El mapa muestra elementos dentro de un radio de 100 metros desde tu posición.')
+doc.add_paragraph('• Puedes hacer zoom en el mapa para ver mejor los elementos cercanos.')
+doc.add_paragraph('• Puedes arrastrar el mapa para explorar el área circundante.')
+doc.add_paragraph('• Si no aparecen elementos, puede ser que no haya ninguno dentro del radio de 100 metros.')
+
+doc.add_heading('Notas importantes:', 2)
+doc.add_paragraph('• El mapa requiere acceso a tu ubicación GPS. Asegúrate de permitir el acceso cuando se solicite.')
+doc.add_paragraph('• La precisión de la ubicación depende de tu dispositivo y de las condiciones del entorno.')
+doc.add_paragraph('• Los elementos se cargan automáticamente cuando se abre el mapa.')
+doc.add_paragraph('• Puedes cerrar el mapa en cualquier momento haciendo clic en el botón "Cerrar" o fuera del modal.')
+doc.add_paragraph('• El mapa utiliza datos de las vistas MobiliarioGis y RecursosGIS de la base de datos.')
+
+doc.add_page_break()
+
+# ============================================
+# SECCIÓN 4: IA Imagen
+# ============================================
+doc.add_heading('4. Reportar Incidencia con Procesamiento de Imagen con IA', 1)
 
 doc.add_paragraph('Puedes capturar o subir una foto de la parada y la aplicación usará inteligencia artificial para identificar automáticamente el número de parada y la incidencia.')
 
@@ -161,11 +222,13 @@ doc.add_paragraph('• Navegador web moderno (Chrome, Firefox, Edge, Safari)')
 doc.add_paragraph('• Conexión a Internet')
 doc.add_paragraph('• Para NFC: Dispositivo con soporte NFC y navegador compatible')
 doc.add_paragraph('• Para Audio: Micrófono funcional')
+doc.add_paragraph('• Para Elementos Cercanos: GPS funcional y permiso de ubicación')
 doc.add_paragraph('• Para Imágenes: Cámara o capacidad de subir archivos de imagen')
 
 doc.add_heading('Permisos necesarios:', 2)
 doc.add_paragraph('• Cámara: Para capturar fotos de las incidencias')
 doc.add_paragraph('• Micrófono: Para grabar audio')
+doc.add_paragraph('• Ubicación/GPS: Para mostrar elementos cercanos en el mapa')
 doc.add_paragraph('• NFC: Para leer etiquetas NFC (si está disponible)')
 
 doc.add_heading('Solución de problemas:', 2)
@@ -181,6 +244,9 @@ doc.add_paragraph('Verifica que hayas permitido el acceso a la cámara y que no 
 
 doc.add_heading('La IA no detecta el número de parada:', 3)
 doc.add_paragraph('Asegúrate de que la foto muestre claramente el cartel informativo con el código de parada. Puedes introducir el número manualmente si es necesario.')
+
+doc.add_heading('No aparecen elementos en el mapa:', 3)
+doc.add_paragraph('Verifica que hayas permitido el acceso a tu ubicación. Si no aparecen elementos, puede ser que no haya ninguno dentro del radio de 100 metros desde tu posición actual.')
 
 # Guardar documento
 doc.save('Instrucciones_Uso_Aplicacion_Incidencias.docx')

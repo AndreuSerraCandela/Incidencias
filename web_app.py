@@ -649,11 +649,13 @@ def send_incidence_to_server_with_session(incidence_payload, gtask_auth):
         # Crear la estructura de datos para BC en formato de fijaciones
         # Si el endpoint de incidencias no existe, usar el formato de fijaciones
         bc_incidence_data = {
+            "_id":"",
             "state": incidence_payload.get('state', 'PENDING'),
             "incidenceType": incidence_payload.get('incidenceType'),
             "observation": incidence_payload.get('observation', ''),
             "description": incidence_payload.get('description'),
             "resource": incidence_payload.get('resource'),
+            "user": user_id,
             "image": documents,
             "audio": audios_with_urls
         }
@@ -1353,6 +1355,243 @@ def get_incidence_types():
             'success': False,
             'error': f'Error interno: {str(e)}'
         }), 500
+
+@app.route('/api/nearby-elements', methods=['POST'])
+def get_nearby_elements():
+    """
+    Obtener elementos cercanos desde las vistas SQL MobiliarioGis y RecursosGIS
+    """
+    try:
+        if not request.is_json:
+            return jsonify({'success': False, 'error': 'Se requiere JSON en el cuerpo'}), 400
+        
+        data = request.get_json()
+        latitude = float(data.get('latitude'))
+        longitude = float(data.get('longitude'))
+        radius = float(data.get('radius', 100))  # Radio en metros, por defecto 100m
+        
+        if not latitude or not longitude:
+            return jsonify({'success': False, 'error': 'Se requieren coordenadas (latitude, longitude)'}), 400
+        
+        # Conectar a SQL Server y obtener elementos cercanos
+        # IMPORTANTE: En la consulta SQL, PuntoY = latitud, PuntoX = longitud
+        elements = query_nearby_elements_from_sql(latitude, longitude, radius)
+        
+        return jsonify({
+            'success': True,
+            'elements': elements,
+            'count': len(elements)
+        })
+        
+    except Exception as e:
+        print(f"❌ Error obteniendo elementos cercanos: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            'success': False,
+            'error': f'Error al obtener elementos cercanos: {str(e)}'
+        }), 500
+
+def query_nearby_elements_from_sql(latitude, longitude, radius_meters):
+    """
+    Consultar elementos cercanos desde SQL Server usando las vistas MobiliarioGis y RecursosGIS
+    """
+    try:
+        import pyodbc
+        
+        # Configuración de conexión SQL Server
+        server = '192.168.10.190'
+        database = 'Malla2009'
+        username = 'SA'
+        password = 'SA1234sa'
+        
+        # Cadena de conexión
+        connection_string = (
+            f'DRIVER={{ODBC Driver 17 for SQL Server}};'
+            f'SERVER={server};'
+            f'DATABASE={database};'
+            f'UID={username};'
+            f'PWD={password}'
+        )
+        
+        # Intentar conectar
+        try:
+            conn = pyodbc.connect(connection_string)
+        except pyodbc.Error as e:
+            # Intentar con driver alternativo si el 17 no está disponible
+            connection_string = (
+                f'DRIVER={{SQL Server}};'
+                f'SERVER={server};'
+                f'DATABASE={database};'
+                f'UID={username};'
+                f'PWD={password}'
+            )
+            conn = pyodbc.connect(connection_string)
+        
+        cursor = conn.cursor()
+        
+        # Calcular distancia usando fórmula de Haversine
+        # Radio de la Tierra en metros
+        earth_radius = 6371000
+        
+        # Convertir radio de metros a grados (aproximación para bounding box)
+        # 1 grado de latitud ≈ 111,000 metros
+        # 1 grado de longitud ≈ 111,000 * cos(latitud) metros
+        # Aumentar el bounding box un 100% (doble) para asegurar que no se pierdan elementos por redondeo
+        # En España, 100m ≈ 0.0009 grados de latitud y ~0.0012 grados de longitud (depende de la latitud)
+        lat_degrees = (radius_meters * 2.0) / 111000  # Doble margen para seguridad
+        lon_degrees = (radius_meters * 2.0) / (111000 * abs(__import__('math').cos(__import__('math').radians(latitude))))
+        
+        
+        # Consulta SQL usando fórmula de Haversine
+        # Buscar en ambas vistas: MobiliarioGis y RecursosGIS
+        # Nota: Los campos se llaman PuntoX (longitud) y PuntoY (latitud)
+        # Los nombres de columnas con espacios deben ir entre corchetes []
+        query = """
+        SELECT 
+            'Mobiliario' as Tipo,
+            'MobiliarioGis' as NombreVista,
+            [Nº Emplazamiento] as NumeroEmplazamiento,
+            [Descripción] as Descripcion,
+            [Dirección] as Direccion,
+            [Tipo] as TipoElemento,
+            [Tipo Parada] as TipoParada,
+            [SAE],
+            [Banco Madera] as BancoMadera,
+            [ABA],
+            [Zona Limpieza] as ZonaLimpieza,
+            [Operario],
+            [Semoan],
+            [PuntoX],
+            [PuntoY],
+            [Incidencia],
+            NULL as NumeroRecurso,
+            NULL as Campanas,
+            (6371000 * acos(
+                cos(radians(?)) * 
+                cos(radians([PuntoY])) * 
+                cos(radians([PuntoX]) - radians(?)) + 
+                sin(radians(?)) * 
+                sin(radians([PuntoY]))
+            )) as Distancia
+        FROM [dbo].[MobiliarioGis]
+        WHERE [PuntoY] IS NOT NULL 
+          AND [PuntoX] IS NOT NULL
+          AND [PuntoY] BETWEEN ? AND ?
+          AND [PuntoX] BETWEEN ? AND ?
+          AND (6371000 * acos(
+                cos(radians(?)) * 
+                cos(radians([PuntoY])) * 
+                cos(radians([PuntoX]) - radians(?)) + 
+                sin(radians(?)) * 
+                sin(radians([PuntoY]))
+            )) <= ?
+        
+        UNION ALL
+        
+        SELECT 
+            'Recurso' as Tipo,
+            'RecursosGIS' as NombreVista,
+            NULL as NumeroEmplazamiento,
+            [Name] as Descripcion,
+            NULL as Direccion,
+            NULL as TipoElemento,
+            NULL as TipoParada,
+            NULL as SAE,
+            NULL as BancoMadera,
+            NULL as ABA,
+            NULL as ZonaLimpieza,
+            NULL as Operario,
+            NULL as Semoan,
+            [PuntoX],
+            [PuntoY],
+            [Incidencia],
+            [No_] as NumeroRecurso,
+            [Campañas] as Campanas,
+            (6371000 * acos(
+                cos(radians(?)) * 
+                cos(radians([PuntoY])) * 
+                cos(radians([PuntoX]) - radians(?)) + 
+                sin(radians(?)) * 
+                sin(radians([PuntoY]))
+            )) as Distancia
+        FROM [dbo].[RecursosGis]
+        WHERE [PuntoY] IS NOT NULL 
+          AND [PuntoX] IS NOT NULL
+          AND [PuntoY] BETWEEN ? AND ?
+          AND [PuntoX] BETWEEN ? AND ?
+          AND (6371000 * acos(
+                cos(radians(?)) * 
+                cos(radians([PuntoY])) * 
+                cos(radians([PuntoX]) - radians(?)) + 
+                sin(radians(?)) * 
+                sin(radians([PuntoY]))
+            )) <= ?
+        
+        ORDER BY Distancia
+        """
+        
+        # Calcular valores del bounding box
+        lat_min = latitude - lat_degrees
+        lat_max = latitude + lat_degrees
+        lon_min = longitude - lon_degrees
+        lon_max = longitude + lon_degrees
+        
+        # Parámetros para la consulta (se repiten para cada vista)
+        # IMPORTANTE: PuntoY = latitud, PuntoX = longitud
+        params = [
+            # Para MobiliarioGis - Haversine (3 parámetros: lat_usuario, lon_usuario, lat_usuario)
+            latitude, longitude, latitude,
+            # Bounding box para MobiliarioGis (4 parámetros: PuntoY min, PuntoY max, PuntoX min, PuntoX max)
+            lat_min, lat_max,  # PuntoY (latitud) BETWEEN
+            lon_min, lon_max,  # PuntoX (longitud) BETWEEN
+            # Filtro distancia para MobiliarioGis (3 parámetros: lat_usuario, lon_usuario, lat_usuario)
+            latitude, longitude, latitude,
+            # Radio máximo para MobiliarioGis
+            radius_meters,
+            # Para RecursosGIS - Haversine (3 parámetros: lat_usuario, lon_usuario, lat_usuario)
+            latitude, longitude, latitude,
+            # Bounding box para RecursosGIS (4 parámetros: PuntoY min, PuntoY max, PuntoX min, PuntoX max)
+            lat_min, lat_max,  # PuntoY (latitud) BETWEEN
+            lon_min, lon_max,  # PuntoX (longitud) BETWEEN
+            # Filtro distancia para RecursosGIS (3 parámetros: lat_usuario, lon_usuario, lat_usuario)
+            latitude, longitude, latitude,
+            # Radio máximo para RecursosGIS
+            radius_meters
+        ]
+        
+        try:
+            cursor.execute(query, params)
+        except Exception as e:
+            print(f"❌ Error ejecutando consulta SQL: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
+        
+        # Obtener columnas
+        columns = [column[0] for column in cursor.description]
+        
+        # Obtener resultados
+        results = []
+        for row in cursor.fetchall():
+            element = {}
+            for i, col in enumerate(columns):
+                element[col] = row[i]
+            results.append(element)
+        
+        cursor.close()
+        conn.close()
+        
+        return results
+        
+    except ImportError:
+        print("❌ pyodbc no está instalado. Ejecuta: pip install pyodbc")
+        return []
+    except Exception as e:
+        print(f"❌ Error consultando SQL Server: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
 
 @app.route('/api/process-audio', methods=['POST'])
 def process_audio():

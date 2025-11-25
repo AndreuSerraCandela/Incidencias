@@ -118,7 +118,14 @@ document.addEventListener('DOMContentLoaded', function() {
         photoGallery: document.getElementById('photoGallery'),
         prevPhotoBtn: document.getElementById('prevPhotoBtn'),
         nextPhotoBtn: document.getElementById('nextPhotoBtn'),
-        photoCount: document.getElementById('photoCount')
+        photoCount: document.getElementById('photoCount'),
+        
+        // Elementos del modal de elementos cercanos
+        nearbyElementsBtn: document.getElementById('nearbyElementsBtn'),
+        nearbyElementsModal: document.getElementById('nearbyElementsModal'),
+        closeNearbyModal: document.getElementById('closeNearbyModal'),
+        nearbyMap: document.getElementById('nearbyMap'),
+        mapStatus: document.getElementById('mapStatus')
     };
     
     console.log('🔍 Elementos del DOM definidos');
@@ -377,6 +384,28 @@ function initializeEventListeners() {
             stopNFCScanning(); // Detener NFC al pulsar añadir fotos
             photoMode = 'añadir'; // Establecer modo "Añadir Fotos"
             startPhotoAutoCapture(); // Abrir modal de cámara para capturar o importar
+        });
+    }
+    
+    // Botón de elementos cercanos
+    if (elements.nearbyElementsBtn) {
+        elements.nearbyElementsBtn.addEventListener('click', () => {
+            stopNFCScanning(); // Detener NFC al pulsar elementos cerca
+            showNearbyElements();
+        });
+    }
+    
+    // Cerrar modal de elementos cercanos
+    if (elements.closeNearbyModal) {
+        elements.closeNearbyModal.addEventListener('click', closeNearbyElementsModal);
+    }
+    
+    // Cerrar modal de elementos cercanos haciendo clic fuera
+    if (elements.nearbyElementsModal) {
+        elements.nearbyElementsModal.addEventListener('click', function(event) {
+            if (event.target === elements.nearbyElementsModal) {
+                closeNearbyElementsModal();
+            }
         });
     }
     
@@ -4932,6 +4961,439 @@ document.addEventListener('keydown', function(e) {
         if (taskModal && taskModal.style.display === 'block') {
             hideTaskSelectionModal();
         }
+        // Cerrar modal de elementos cercanos
+        if (elements.nearbyElementsModal && elements.nearbyElementsModal.style.display === 'block') {
+            closeNearbyElementsModal();
+        }
     }
 });
+
+// ========================================
+// ELEMENTOS CERCANOS - MAPA
+// ========================================
+
+let nearbyMapInstance = null; // Instancia del mapa Leaflet
+let userMarker = null; // Marcador del usuario
+let nearbyMarkers = []; // Marcadores de elementos cercanos
+
+// Mostrar modal de elementos cercanos
+async function showNearbyElements() {
+    try {
+        console.log('🗺️ Abriendo modal de elementos cercanos...');
+        
+        // Mostrar modal
+        if (elements.nearbyElementsModal) {
+            elements.nearbyElementsModal.style.display = 'block';
+        }
+        
+        // Actualizar estado
+        if (elements.mapStatus) {
+            elements.mapStatus.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Obteniendo ubicación...';
+        }
+        
+        // Obtener ubicación del usuario
+        const position = await getCurrentPosition();
+        
+        if (!position) {
+            if (elements.mapStatus) {
+                elements.mapStatus.innerHTML = '<i class="fas fa-exclamation-triangle"></i> No se pudo obtener la ubicación. Verifica los permisos de geolocalización.';
+            }
+            return;
+        }
+        
+        const { latitude, longitude } = position;
+        console.log(`📍 Ubicación del usuario obtenida: Lat=${latitude}, Lon=${longitude}`);
+        console.log(`📍 Precisión: ${position.accuracy}m`);
+        
+        // Inicializar mapa
+        initializeMap(latitude, longitude);
+        
+        // Obtener elementos cercanos
+        if (elements.mapStatus) {
+            elements.mapStatus.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Buscando elementos cercanos...';
+        }
+        
+        // Buscar en un radio de 100m (puede aumentarse si no encuentra elementos)
+        const searchRadius = 100; // metros
+        console.log(`🔍 Buscando elementos en radio de ${searchRadius}m`);
+        const nearbyElements = await getNearbyElements(latitude, longitude, searchRadius);
+        
+        if (nearbyElements && nearbyElements.success) {
+            console.log(`✅ Encontrados ${nearbyElements.elements.length} elementos cercanos`);
+            console.log(`📊 Primeros elementos:`, nearbyElements.elements.slice(0, 3).map(el => ({
+                Tipo: el.Tipo,
+                PuntoX: el.PuntoX,
+                PuntoY: el.PuntoY,
+                Distancia: el.Distancia
+            })));
+            
+            // Mostrar elementos en el mapa
+            displayElementsOnMap(nearbyElements.elements);
+            
+            if (elements.mapStatus) {
+                elements.mapStatus.innerHTML = `<i class="fas fa-check-circle"></i> ${nearbyElements.elements.length} elemento(s) encontrado(s) en un radio de 100m`;
+            }
+        } else {
+            console.log('⚠️ No se encontraron elementos cercanos');
+            if (elements.mapStatus) {
+                elements.mapStatus.innerHTML = '<i class="fas fa-info-circle"></i> No se encontraron elementos cercanos en un radio de 100m';
+            }
+        }
+        
+    } catch (error) {
+        console.error('❌ Error al mostrar elementos cercanos:', error);
+        if (elements.mapStatus) {
+            elements.mapStatus.innerHTML = `<i class="fas fa-exclamation-triangle"></i> Error: ${error.message}`;
+        }
+        showStatus('Error al obtener elementos cercanos: ' + error.message, 'error');
+    }
+}
+
+// Obtener posición actual del usuario
+function getCurrentPosition() {
+    return new Promise((resolve, reject) => {
+        if (!navigator.geolocation) {
+            reject(new Error('Geolocalización no soportada por este navegador'));
+            return;
+        }
+        
+        navigator.geolocation.getCurrentPosition(
+            (position) => {
+                resolve({
+                    latitude: position.coords.latitude,
+                    longitude: position.coords.longitude,
+                    accuracy: position.coords.accuracy
+                });
+            },
+            (error) => {
+                console.error('Error de geolocalización:', error);
+                reject(new Error('No se pudo obtener la ubicación: ' + error.message));
+            },
+            {
+                enableHighAccuracy: true,
+                timeout: 10000,
+                maximumAge: 0
+            }
+        );
+    });
+}
+
+// Inicializar mapa Leaflet
+function initializeMap(latitude, longitude) {
+    // Limpiar mapa anterior si existe
+    if (nearbyMapInstance) {
+        nearbyMapInstance.remove();
+        nearbyMapInstance = null;
+    }
+    
+    // Crear nuevo mapa
+    nearbyMapInstance = L.map('nearbyMap').setView([latitude, longitude], 17);
+    
+    // Añadir capa de OpenStreetMap
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors',
+        maxZoom: 19
+    }).addTo(nearbyMapInstance);
+    
+    // Añadir marcador del usuario
+    userMarker = L.marker([latitude, longitude], {
+        icon: L.icon({
+            iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png',
+            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41],
+            popupAnchor: [1, -34],
+            shadowSize: [41, 41]
+        })
+    }).addTo(nearbyMapInstance);
+    
+    userMarker.bindPopup('<b>Tu ubicación</b>').openPopup();
+    
+    // Añadir círculo de radio de 100m
+    L.circle([latitude, longitude], {
+        color: 'blue',
+        fillColor: '#3388ff',
+        fillOpacity: 0.2,
+        radius: 100
+    }).addTo(nearbyMapInstance);
+}
+
+// Obtener elementos cercanos del servidor
+async function getNearbyElements(latitude, longitude, radius) {
+    try {
+        const response = await fetch('/api/nearby-elements', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Device-ID': deviceId
+            },
+            body: JSON.stringify({
+                latitude: latitude,
+                longitude: longitude,
+                radius: radius
+            })
+        });
+        
+        const result = await response.json();
+        return result;
+    } catch (error) {
+        console.error('Error al obtener elementos cercanos:', error);
+        throw error;
+    }
+}
+
+// Mostrar elementos en el mapa
+function displayElementsOnMap(elements) {
+    // Limpiar marcadores anteriores
+    nearbyMarkers.forEach(marker => {
+        nearbyMapInstance.removeLayer(marker);
+    });
+    nearbyMarkers = [];
+    
+    // Añadir marcadores para cada elemento
+    elements.forEach((element, index) => {
+        // Los campos se llaman PuntoY y PuntoX
+        // IMPORTANTE: Verificar si están invertidos - probar ambas opciones
+        let puntoX = parseFloat(element.PuntoX || element.puntoX || element.Punto_X || element.punto_x || 0);
+        let puntoY = parseFloat(element.PuntoY || element.puntoY || element.Punto_Y || element.punto_y || 0);
+        
+        // Validar que las coordenadas sean números válidos
+        if (isNaN(puntoX) || isNaN(puntoY) || puntoX === 0 || puntoY === 0) {
+            console.warn(`⚠️ Elemento ${index} no tiene coordenadas válidas:`, {
+                PuntoX: element.PuntoX,
+                PuntoY: element.PuntoY,
+                elemento: element
+            });
+            return;
+        }
+        
+        // Determinar si PuntoX y PuntoY están en el orden correcto
+        // En España, las coordenadas típicas son:
+        // - Latitud: entre 35-44 grados (norte-sur)
+        // - Longitud: entre -10 y 5 grados (este-oeste, negativos en España)
+        // Si PuntoX está en ese rango de latitud, están invertidos
+        
+        let lat, lon;
+        
+        // Si PuntoX está en rango de latitud española (35-44) y PuntoY es negativo o pequeño, están invertidos
+        if (puntoX >= 35 && puntoX <= 44 && (puntoY < 0 || puntoY < 10)) {
+            // Están invertidos: PuntoX es latitud, PuntoY es longitud
+            console.log(`🔄 Coordenadas invertidas detectadas para elemento ${index}: PuntoX=${puntoX}, PuntoY=${puntoY}`);
+            lat = puntoX;
+            lon = puntoY;
+        } else if (puntoY >= 35 && puntoY <= 44 && (puntoX < 0 || puntoX < 10)) {
+            // Orden correcto: PuntoY es latitud, PuntoX es longitud
+            lat = puntoY;
+            lon = puntoX;
+        } else {
+            // Por defecto, asumir: PuntoY = latitud, PuntoX = longitud
+            // Pero si los valores no tienen sentido, probar invertidos
+            if (Math.abs(puntoX) > 90 || Math.abs(puntoY) > 90) {
+                // Valores fuera del rango normal de latitud, probar invertidos
+                console.log(`🔄 Probando coordenadas invertidas para elemento ${index}: PuntoX=${puntoX}, PuntoY=${puntoY}`);
+                lat = puntoX;
+                lon = puntoY;
+            } else {
+                // Orden estándar
+                lat = puntoY;
+                lon = puntoX;
+            }
+        }
+        
+        console.log(`📍 Elemento ${index}: PuntoX=${puntoX}, PuntoY=${puntoY} → Lat=${lat}, Lon=${lon}`);
+        
+        // Validar que las coordenadas finales sean válidas
+        if (isNaN(lat) || isNaN(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+            console.warn(`⚠️ Coordenadas finales inválidas para elemento ${index}: lat=${lat}, lon=${lon}`);
+            return;
+        }
+        
+        // Determinar tipo de elemento y color del marcador
+        const isMobiliario = element.Tipo === 'Mobiliario' || element.tipo === 'Mobiliario' || 
+                            element.NombreVista === 'MobiliarioGis' || element.nombreVista === 'MobiliarioGis';
+        const markerColor = isMobiliario ? 'red' : 'green';
+        
+        // Crear icono personalizado
+        const icon = L.icon({
+            iconUrl: `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${markerColor}.png`,
+            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
+            iconSize: [25, 41],
+            iconAnchor: [12, 41],
+            popupAnchor: [1, -34],
+            shadowSize: [41, 41]
+        });
+        
+        // Crear marcador
+        const marker = L.marker([lat, lon], { icon: icon }).addTo(nearbyMapInstance);
+        
+        // Información del elemento para el popup
+        // Para MobiliarioGis: usar Nº Emplazamiento, Descripción, Dirección, etc.
+        // Para RecursosGIS: usar los campos que tenga esa vista
+        let elementName = '';
+        let elementId = '';
+        let elementDescription = '';
+        let elementAddress = '';
+        let elementType = isMobiliario ? 'Mobiliario' : 'Recurso Publicitario';
+        
+        if (isMobiliario) {
+            // MobiliarioGis tiene: Nº Emplazamiento, Descripción, Dirección, Tipo, etc.
+            elementId = element.NumeroEmplazamiento || element['Nº Emplazamiento'] || 
+                       element.numeroEmplazamiento || element['nº emplazamiento'] || 'N/A';
+            elementName = element.Descripcion || element.Descripción || 
+                         element.descripcion || element.descripción || 
+                         elementId || `Emplazamiento ${index + 1}`;
+            elementDescription = element.Descripcion || element.Descripción || 
+                               element.descripcion || element.descripción || '';
+            elementAddress = element.Direccion || element.Dirección || 
+                           element.direccion || element.dirección || '';
+            const tipoElemento = element.TipoElemento || element.Tipo || 
+                               element.tipoElemento || element.tipo || '';
+            if (tipoElemento) {
+                elementType = `${elementType} - ${tipoElemento}`;
+            }
+        } else {
+            // RecursosGIS tiene: No_, Name, PuntoX, PuntoY, Incidencia, Campañas
+            elementId = element.NumeroRecurso || element.No_ || 
+                       element.numeroRecurso || element.no_ || 
+                       element.Codigo || element.codigo || 'N/A';
+            elementName = element.Name || element.name || 
+                         element.Descripcion || element.Descripción || 
+                         element.descripcion || element.descripción || 
+                         elementId || `Recurso ${index + 1}`;
+            elementDescription = element.Name || element.name || 
+                                element.Descripcion || element.Descripción || 
+                                element.descripcion || element.descripción || '';
+            elementAddress = element.Direccion || element.Dirección || 
+                            element.direccion || element.dirección || '';
+            // Añadir información de campañas si existe
+            if (element.Campanas || element.Campañas || element.campanas || element.campañas) {
+                const campanas = element.Campanas || element.Campañas || 
+                                element.campanas || element.campañas;
+                if (campanas) {
+                    elementDescription += (elementDescription ? ' - ' : '') + `Campañas: ${campanas}`;
+                }
+            }
+        }
+        
+        // Crear contenido del popup con botón para crear incidencia
+        let popupHtml = `<div style="min-width: 200px;">`;
+        popupHtml += `<b>${elementName}</b><br>`;
+        if (elementId && elementId !== 'N/A') {
+            popupHtml += `<small><strong>Nº:</strong> ${elementId}</small><br>`;
+        }
+        popupHtml += `<small><strong>Tipo:</strong> ${elementType}</small><br>`;
+        if (elementAddress) {
+            popupHtml += `<small><strong>Dirección:</strong> ${elementAddress}</small><br>`;
+        }
+        if (elementDescription && elementDescription !== elementName) {
+            popupHtml += `<small>${elementDescription}</small><br>`;
+        }
+        popupHtml += `<button class="btn btn-primary" onclick="createIncidenceFromElement(${index})" 
+                        style="margin-top: 10px; width: 100%; padding: 5px;">
+                    <i class="fas fa-exclamation-triangle"></i> Crear Incidencia
+                </button>`;
+        popupHtml += `</div>`;
+        
+        const popupContent = popupHtml;
+        
+        marker.bindPopup(popupContent);
+        
+        // Guardar referencia al elemento en el marcador
+        marker.elementData = element;
+        marker.elementIndex = index;
+        
+        nearbyMarkers.push(marker);
+    });
+    
+    // Ajustar vista del mapa para mostrar todos los marcadores
+    if (nearbyMarkers.length > 0) {
+        const group = new L.featureGroup([userMarker, ...nearbyMarkers]);
+        nearbyMapInstance.fitBounds(group.getBounds().pad(0.1));
+    }
+}
+
+// Crear incidencia desde un elemento del mapa
+async function createIncidenceFromElement(elementIndex) {
+    try {
+        // Buscar el marcador por índice
+        const marker = nearbyMarkers[elementIndex];
+        
+        if (!marker || !marker.elementData) {
+            showStatus('Error: No se encontró el elemento seleccionado', 'error');
+            return;
+        }
+        
+        const element = marker.elementData;
+        
+        console.log('📝 Creando incidencia desde elemento:', element);
+        
+        // Cerrar modal del mapa
+        closeNearbyElementsModal();
+        
+        // Establecer datos del elemento como QR
+        // Para MobiliarioGis usar Nº Emplazamiento, para RecursosGIS usar el ID correspondiente
+        const isMobiliario = element.Tipo === 'Mobiliario' || element.tipo === 'Mobiliario' || 
+                            element.NombreVista === 'MobiliarioGis' || element.nombreVista === 'MobiliarioGis';
+        
+        let elementId = '';
+        let elementName = '';
+        
+        if (isMobiliario) {
+            elementId = element.NumeroEmplazamiento || element['Nº Emplazamiento'] || 
+                       element.numeroEmplazamiento || element['nº emplazamiento'] || 'ELEMENTO';
+            elementName = element.Descripcion || element.Descripción || 
+                         element.descripcion || element.descripción || elementId;
+        } else {
+            // RecursosGIS: usar No_ como ID y Name como nombre
+            elementId = element.NumeroRecurso || element.No_ || 
+                       element.numeroRecurso || element.no_ || 
+                       element.Codigo || element.codigo || 'ELEMENTO';
+            elementName = element.Name || element.name || 
+                         element.Descripcion || element.Descripción || 
+                         element.descripcion || element.descripción || 
+                         element.Nombre || element.nombre || elementId;
+        }
+        
+        currentQRData = elementId;
+        
+        // Mostrar en la sección de QR
+        if (elements.qrData && elements.qrType && elements.qrResults) {
+            elements.qrData.textContent = elementId;
+            elements.qrData.href = '#';
+            elements.qrType.textContent = isMobiliario ? 'Mobiliario Cercano' : 'Recurso Cercano';
+            elements.qrResults.style.display = 'block';
+        }
+        
+        // Abrir modal de cámara para tomar foto
+        photoMode = 'reportar';
+        startPhotoAutoCapture();
+        
+        showStatus(`Incidencia preparada para: ${elementName}`, 'success');
+        
+    } catch (error) {
+        console.error('Error al crear incidencia desde elemento:', error);
+        showStatus('Error al crear incidencia: ' + error.message, 'error');
+    }
+}
+
+// Hacer función global para el botón del popup
+window.createIncidenceFromElement = createIncidenceFromElement;
+
+// Cerrar modal de elementos cercanos
+function closeNearbyElementsModal() {
+    if (elements.nearbyElementsModal) {
+        elements.nearbyElementsModal.style.display = 'none';
+    }
+    
+    // Limpiar mapa
+    if (nearbyMapInstance) {
+        nearbyMapInstance.remove();
+        nearbyMapInstance = null;
+    }
+    
+    nearbyMarkers = [];
+    userMarker = null;
+    
+    console.log('🗺️ Modal de elementos cercanos cerrado');
+}
 

@@ -28,6 +28,10 @@
     <title>Incidencias Malla - Gestión de Incidencias</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 </head>
 <body>
 <div class="top-bar">
@@ -134,9 +138,14 @@
             <!-- Botones de acción -->
             <div id="actionButtons" class="action-buttons" style="display: none;">
                 <div class="action-buttons-row">
-                    <button id="recordAudioBtn" class="btn btn-secondary">
-                        <i class="fas fa-microphone"></i> Grabar Audio
-                    </button>
+                    <div class="audio-buttons-column">
+                        <button id="recordAudioBtn" class="btn btn-secondary btn-audio-main">
+                            <i class="fas fa-microphone"></i> Grabar Audio
+                        </button>
+                        <button id="nearbyElementsBtn" class="btn btn-primary btn-audio-secondary">
+                            <i class="fas fa-map-marker-alt"></i> Elementos Cerca
+                        </button>
+                    </div>
                     <div class="photo-buttons-column">
                         <button id="addPhotosBtn" class="btn btn-info btn-small">
                             <i class="fas fa-images"></i> Añadir Fotos
@@ -401,6 +410,22 @@
                     <button id="cancelAIResultsBtn" class="btn btn-secondary">
                         <i class="fas fa-times"></i> Cancelar
                     </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal de Elementos Cercanos -->
+        <div id="nearbyElementsModal" class="modal" style="display: none;">
+            <div class="modal-content" style="max-width: 95vw; max-height: 95vh; width: 95vw; height: 95vh;">
+                <div class="modal-header">
+                    <h3><i class="fas fa-map-marker-alt"></i> Elementos Cerca (100m)</h3>
+                    <button class="close-btn" id="closeNearbyModal">&times;</button>
+                </div>
+                <div class="modal-body" style="height: calc(95vh - 120px); padding: 10px;">
+                    <div id="mapStatus" style="margin-bottom: 10px; padding: 10px; background: #f0f0f0; border-radius: 5px;">
+                        <i class="fas fa-spinner fa-spin"></i> Obteniendo ubicación...
+                    </div>
+                    <div id="nearbyMap" style="width: 100%; height: calc(100% - 60px); border-radius: 5px; z-index: 1;"></div>
                 </div>
             </div>
         </div>

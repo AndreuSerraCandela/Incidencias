@@ -194,6 +194,17 @@ main {
     align-items: stretch; /* Estirar para que todos tengan la misma altura */
 }
 
+.audio-buttons-column {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    flex: 1;
+    min-width: 120px;
+    max-width: 160px;
+    align-items: stretch;
+    height: 100%; /* Ocupar toda la altura disponible */
+}
+
 .photo-buttons-column {
     display: flex;
     flex-direction: column;
@@ -203,6 +214,39 @@ main {
     max-width: 160px;
     align-items: stretch;
     height: 100%; /* Ocupar toda la altura disponible */
+}
+
+/* Botón principal de audio - más alto */
+.btn-audio-main {
+    flex: 1 1 auto; /* Crecer para ocupar la mayor parte del espacio */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 12px 16px !important;
+    min-height: auto;
+}
+
+.btn-audio-main i {
+    font-size: 20px !important;
+    margin-bottom: 2px;
+}
+
+/* Botón secundario de audio - más bajo */
+.btn-audio-secondary {
+    flex: 0 0 auto; /* No crecer, tamaño fijo */
+    padding: 2px 16px !important;
+    font-size: 10px !important;
+    min-height: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-audio-secondary i {
+    font-size: 16px !important;
+    margin-bottom: 1px;
 }
 
 /* Botón "Añadir Fotos" - más estrecho, pero ajustado para encajar */
