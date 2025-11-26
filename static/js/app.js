@@ -112,6 +112,7 @@ document.addEventListener('DOMContentLoaded', function() {
         closeAIResultsModal: document.getElementById('closeAIResultsModal'),
         aiProcessingStatus: document.getElementById('aiProcessingStatus'),
         aiResultsForm: document.getElementById('aiResultsForm'),
+        aiIncidenceType: document.getElementById('aiIncidenceType'),
         aiStopNumber: document.getElementById('aiStopNumber'),
         aiDescription: document.getElementById('aiDescription'),
         aiRawResponse: document.getElementById('aiRawResponse'),
@@ -1668,12 +1669,15 @@ async function uploadPhoto() {
             }
         });
         
+        // Obtener tipo de incidencia por defecto
+        const defaultType = await getDefaultIncidenceType();
+        
         if (hasQRData) {
             // Usar datos de QR
             const qrId = extractQRId(currentQRData);
             incidencePayload = {
                 state: 'PENDING',
-                incidenceType: '65a1b2c3d4e5f6789012345',
+                incidenceType: defaultType,
                 observation: currentQRData,
                 description: 'Incidencia reportada con QR',
                 resource: qrId,
@@ -1684,7 +1688,7 @@ async function uploadPhoto() {
             // Usar datos de audio
             incidencePayload = {
                 state: 'PENDING',
-                incidenceType: '65a1b2c3d4e5f6789012345',
+                incidenceType: defaultType,
                 observation: pendingIncidenceData.fullText || 'Incidencia reportada con audio',
                 description: pendingIncidenceData.description || 'Incidencia reportada con audio',
                 resource: `PARADA_${pendingIncidenceData.stopNumber}`,
@@ -1808,6 +1812,9 @@ async function processImageWithAI() {
         // Limpiar el controller ya que el procesamiento terminó
         aiProcessingController = null;
         
+        // Cargar tipos de incidencia antes de mostrar el formulario
+        await loadIncidenceTypesToSelect();
+        
         // Mostrar formulario con resultados (siempre, incluso si los valores son null)
         if (elements.aiResultsForm) {
             elements.aiResultsForm.style.display = 'block';
@@ -1890,9 +1897,55 @@ async function processImageWithAI() {
     }
 }
 
+// Función para cargar tipos de incidencia en el select
+async function loadIncidenceTypesToSelect() {
+    try {
+        const typesResponse = await fetch('/api/incidence-types');
+        const typesData = await typesResponse.json();
+        
+        if (!typesData.success || !elements.aiIncidenceType) {
+            console.warn('⚠️ No se pudieron cargar los tipos de incidencia');
+            return 'EMT'; // Fallback
+        }
+        
+        // Limpiar opciones existentes
+        elements.aiIncidenceType.innerHTML = '';
+        
+        // Agregar opciones
+        typesData.types.forEach(type => {
+            const option = document.createElement('option');
+            option.value = type;
+            option.textContent = type;
+            elements.aiIncidenceType.appendChild(option);
+        });
+        
+        // Establecer valor por defecto (EMT)
+        const defaultType = typesData.default_type || 'EMT';
+        elements.aiIncidenceType.value = defaultType;
+        
+        return defaultType;
+    } catch (error) {
+        console.error('❌ Error al cargar tipos de incidencia:', error);
+        return 'EMT'; // Fallback
+    }
+}
+
 // Mostrar modal de resultados de IA
-function showAIResultsModal() {
+async function showAIResultsModal(isManualEntry = false) {
     if (elements.aiResultsModal) {
+        // Cargar tipos de incidencia antes de mostrar el modal
+        await loadIncidenceTypesToSelect();
+        
+        // Cambiar título según el modo
+        const modalTitle = document.getElementById('aiResultsModalTitle');
+        if (modalTitle) {
+            if (isManualEntry) {
+                modalTitle.innerHTML = '<i class="fas fa-keyboard"></i> Ingresar Datos de Incidencia';
+            } else {
+                modalTitle.innerHTML = '<i class="fas fa-robot"></i> Resultados de IA - Revisar y Corregir';
+            }
+        }
+        
         elements.aiResultsModal.style.display = 'block';
     }
 }
@@ -1908,7 +1961,17 @@ function closeAIResultsModal() {
     if (elements.aiResultsModal) {
         elements.aiResultsModal.style.display = 'none';
         
+        // Restaurar título original del modal
+        const modalTitle = document.getElementById('aiResultsModalTitle');
+        if (modalTitle) {
+            modalTitle.innerHTML = '<i class="fas fa-robot"></i> Resultados de IA - Revisar y Corregir';
+        }
+        
         // Limpiar campos
+        if (elements.aiIncidenceType) {
+            // Resetear al tipo por defecto (se cargará cuando se abra el modal)
+            elements.aiIncidenceType.value = 'EMT';
+        }
         if (elements.aiStopNumber) {
             elements.aiStopNumber.value = '';
         }
@@ -1932,6 +1995,9 @@ function closeAIResultsModal() {
     if (elements.manualEntryBtn) {
         elements.manualEntryBtn.style.display = 'none';
     }
+    
+    // Resetear bandera de entrada manual
+    manualEntryRequested = false;
 }
 
 // Función para manejar la entrada manual de datos
@@ -1970,16 +2036,62 @@ async function handleManualEntry() {
     // Pequeño delay para asegurar que el modal se cierre completamente
     await new Promise(resolve => setTimeout(resolve, 100));
     
-    // Mostrar formulario manual (usar sendIncidenceFromPreview directamente)
-    // Esto mostrará los prompts para seleccionar tipo de incidencia y descripción
-    console.log('📝 Abriendo formulario de entrada manual...');
-    await sendIncidenceFromPreview();
+    // Mostrar el modal de IA con campos vacíos para entrada manual
+    console.log('📝 Abriendo modal de entrada manual...');
+    
+    // Cargar tipos de incidencia y establecer EMT por defecto
+    await loadIncidenceTypesToSelect();
+    
+    // Limpiar campos
+    if (elements.aiStopNumber) {
+        elements.aiStopNumber.value = '';
+    }
+    if (elements.aiDescription) {
+        elements.aiDescription.value = '';
+    }
+    
+    // Ocultar estado de procesamiento
+    if (elements.aiProcessingStatus) {
+        elements.aiProcessingStatus.style.display = 'none';
+    }
+    
+    // Mostrar formulario
+    if (elements.aiResultsForm) {
+        elements.aiResultsForm.style.display = 'block';
+    }
+    
+    // Mostrar botón de confirmar
+    if (elements.confirmAIResultsBtn) {
+        elements.confirmAIResultsBtn.style.display = 'flex';
+    }
+    
+    // Ocultar botón de entrada manual (ya no es necesario)
+    if (elements.manualEntryBtn) {
+        elements.manualEntryBtn.style.display = 'none';
+    }
+    
+    // Ocultar respuesta completa de IA
+    if (elements.aiRawResponse) {
+        elements.aiRawResponse.style.display = 'none';
+    }
+    
+    // Cambiar título del modal para entrada manual
+    const modalTitle = document.getElementById('aiResultsModalTitle');
+    if (modalTitle) {
+        modalTitle.innerHTML = '<i class="fas fa-keyboard"></i> Ingresar Datos de Incidencia';
+    }
+    
+    // Mostrar el modal
+    if (elements.aiResultsModal) {
+        elements.aiResultsModal.style.display = 'block';
+    }
 }
 
 // Confirmar resultados de IA y enviar incidencia
 async function confirmAIResults() {
     try {
         // Obtener valores corregidos
+        const incidenceType = elements.aiIncidenceType ? elements.aiIncidenceType.value : await getDefaultIncidenceType();
         const stopNumber = elements.aiStopNumber ? elements.aiStopNumber.value.trim() : '';
         const description = elements.aiDescription ? elements.aiDescription.value.trim() : '';
         
@@ -1996,7 +2108,7 @@ async function confirmAIResults() {
             return;
         }
         
-        console.log('✅ Confirmando resultados de IA:', { stopNumber, description });
+        console.log('✅ Confirmando resultados de IA:', { incidenceType, stopNumber, description });
         
         // Almacenar datos en pendingIncidenceData (similar a audio)
         pendingIncidenceData = {
@@ -2004,7 +2116,8 @@ async function confirmAIResults() {
             description: description,
             fullText: `Parada ${stopNumber}, ${description}`,
             hasAudio: false,
-            hasAI: true
+            hasAI: true,
+            incidenceType: incidenceType // Guardar el tipo seleccionado
         };
         
         // Cerrar modal de IA
@@ -2038,10 +2151,10 @@ async function confirmAIResults() {
             }
         });
         
-        // Crear payload de la incidencia
+        // Crear payload de la incidencia usando el tipo seleccionado
         const incidencePayload = {
             state: 'PENDING',
-            incidenceType: '65a1b2c3d4e5f6789012345',
+            incidenceType: incidenceType,
             observation: pendingIncidenceData.fullText,
             description: pendingIncidenceData.description,
             resource: `PARADA_${pendingIncidenceData.stopNumber}`,
@@ -3690,10 +3803,13 @@ async function createIncidenceWithAudio(description, audioBase64) {
         // Obtener el QR ID actual (si existe)
         const qrId = currentQRData ? extractQRId(currentQRData) : 'PARADA_BUS';
         
+        // Obtener tipo de incidencia por defecto
+        const defaultType = await getDefaultIncidenceType();
+        
         // Crear payload de la incidencia
         const incidencePayload = {
             state: 'PENDING',
-            incidenceType: '65a1b2c3d4e5f6789012345', // ID del tipo de incidencia (ajustar según configuración)
+            incidenceType: defaultType,
             observation: description,
             description: description,
             resource: qrId, // Usar el QR ID como recurso
@@ -3827,10 +3943,13 @@ async function createIncidenceWithTranscribedText(stopNumber, description, fullT
     try {
         showStatus('Creando incidencia...', 'info');
         
+        // Obtener tipo de incidencia por defecto
+        const defaultType = await getDefaultIncidenceType();
+        
         // Crear payload de la incidencia
         const incidencePayload = {
             state: 'PENDING',
-            incidenceType: '65a1b2c3d4e5f6789012345', // ID del tipo de incidencia (ajustar según configuración)
+            incidenceType: defaultType,
             observation: fullText, // Texto completo transcrito
             description: description, // Descripción limpia
             resource: `PARADA_${stopNumber}`, // Recurso como número de parada
@@ -3862,10 +3981,13 @@ async function testIncidenceCreation() {
     try {
         showStatus('Probando creación de incidencia...', 'info');
         
+        // Obtener tipo de incidencia por defecto
+        const defaultType = await getDefaultIncidenceType();
+        
         // Crear payload de prueba
         const testPayload = {
             state: 'PENDING',
-            incidenceType: '65a1b2c3d4e5f6789012345',
+            incidenceType: defaultType,
             observation: 'Prueba de incidencia desde audio - Parada 625, cristal roto',
             description: 'cristal roto',
             resource: 'PARADA_625',
@@ -4396,6 +4518,33 @@ function showStatus(message, type = 'info') {
     setTimeout(() => {
         statusElement.style.display = 'none';
     }, 5000);
+}
+
+// Función helper para obtener el tipo de incidencia por defecto
+let cachedDefaultIncidenceType = null; // Cache para evitar múltiples llamadas
+async function getDefaultIncidenceType() {
+    // Si ya tenemos el tipo en cache, devolverlo
+    if (cachedDefaultIncidenceType) {
+        return cachedDefaultIncidenceType;
+    }
+    
+    try {
+        const typesResponse = await fetch('/api/incidence-types');
+        const typesData = await typesResponse.json();
+        
+        if (typesData.success && typesData.default_type) {
+            cachedDefaultIncidenceType = typesData.default_type;
+            return cachedDefaultIncidenceType;
+        } else {
+            // Fallback a 'EMT' si hay error
+            console.warn('⚠️ No se pudo obtener el tipo por defecto, usando EMT');
+            return 'EMT';
+        }
+    } catch (error) {
+        console.error('❌ Error al obtener tipo de incidencia por defecto:', error);
+        // Fallback a 'EMT' si hay error
+        return 'EMT';
+    }
 }
 
 // Función para generar QR de prueba (desarrollo)
