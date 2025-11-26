@@ -525,7 +525,7 @@ def send_incidence_to_server_with_session(incidence_payload, gtask_auth):
 
         # Obtener ID del usuario actual de la sesión específica
         user_id = gtask_auth.get_current_user_id()
-        if not user_id:
+        if not user_id or (isinstance(user_id, str) and not user_id.strip()):
             return {
                 'success': False,
                 'error': 'No hay usuario autenticado'

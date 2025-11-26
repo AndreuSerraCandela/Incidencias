@@ -3525,6 +3525,11 @@ function sendIncidenceInBackground(payload, successMessage, errorMessage, onSucc
             showStatus(errorMsg, 'error');
             console.error('❌ Error al enviar incidencia:', result);
             
+            // Mostrar alert si el error es de autenticación
+            if (result.error && (result.error.includes('usuario autenticado') || result.error.includes('No hay usuario autenticado'))) {
+                alert('❌ Error de autenticación\n\n' + result.error + '\n\nPor favor, inicia sesión nuevamente.');
+            }
+            
             // Hacer rollback de fotos si hay error
             if (fileIds.length > 0) {
                 console.log('🔄 Haciendo rollback de fotos debido a error...');
