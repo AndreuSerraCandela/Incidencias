@@ -24,13 +24,20 @@ let silenceDetectionInterval = null; // Intervalo para detectar silencio
 let isAutoRecording = false; // Indica si la grabación es automática (con detección de silencio)
 let lastSoundTime = null; // Última vez que se detectó sonido
 
+// Variable para controlar el procesamiento de IA
+let aiProcessingController = null; // AbortController para cancelar el fetch de IA
+let manualEntryRequested = false; // Bandera para indicar que el usuario eligió entrada manual
+
 // Variables para almacenar datos de incidencia
 let pendingIncidenceData = {
     stopNumber: null,
     description: null,
     fullText: null,
     hasAudio: false,
-    hasAI: false
+    hasAI: false,
+    isParadaBus: false,
+    isMobiliario: false,
+    elementData: null
 };
 
 // Elementos del DOM
@@ -111,6 +118,7 @@ document.addEventListener('DOMContentLoaded', function() {
         aiRawResponseText: document.getElementById('aiRawResponseText'),
         confirmAIResultsBtn: document.getElementById('confirmAIResultsBtn'),
         cancelAIResultsBtn: document.getElementById('cancelAIResultsBtn'),
+        manualEntryBtn: document.getElementById('manualEntryBtn'),
         
         // Elementos de la galería de fotos
         addPhotosBtn: document.getElementById('addPhotosBtn'),
@@ -322,6 +330,10 @@ function initializeEventListeners() {
     }
     if (elements.cancelAIResultsBtn) {
         elements.cancelAIResultsBtn.addEventListener('click', closeAIResultsModal);
+    }
+    
+    if (elements.manualEntryBtn) {
+        elements.manualEntryBtn.addEventListener('click', handleManualEntry);
     }
     
     // Controles de cámara QR (ocultos por defecto)
@@ -1722,17 +1734,27 @@ async function processImageWithAI() {
         console.log('📸 Usando foto principal para IA');
         showStatus('Procesando imagen con IA...', 'info');
         
+        // Resetear bandera de entrada manual
+        manualEntryRequested = false;
+        
         // Mostrar modal de procesamiento
         showAIResultsModal();
         elements.aiProcessingStatus.style.display = 'block';
         elements.aiResultsForm.style.display = 'none';
         elements.confirmAIResultsBtn.style.display = 'none';
+        // Mostrar botón de entrada manual durante el procesamiento
+        if (elements.manualEntryBtn) {
+            elements.manualEntryBtn.style.display = 'flex';
+        }
+        
+        // Crear AbortController para poder cancelar el fetch
+        aiProcessingController = new AbortController();
         
         console.log('📸 Enviando imagen principal a IA...');
         console.log('📸 Tipo de imagen:', typeof photoForAI);
         console.log('📸 Longitud de imagen:', photoForAI ? photoForAI.length : 'N/A');
         console.log('📸 Primeros 100 caracteres:', photoForAI ? photoForAI.substring(0, 100) : 'N/A');
-        //const timeoutId = setTimeout(() => controller.abort(), 200000);
+        
         // Enviar imagen principal al backend para procesar con LM Studio
         const response = await fetch('/api/process-image-ai', {
             method: 'POST',
@@ -1742,9 +1764,9 @@ async function processImageWithAI() {
             },
             body: JSON.stringify({
                 image: photoForAI
-            })
+            }),
+            signal: aiProcessingController.signal
         });
-        //clearTimeout(timeoutId); // Limpiar timeout si la respuesta llega a tiempo
         
         console.log('📡 Respuesta recibida del servidor, status:', response.status);
         
@@ -1756,9 +1778,16 @@ async function processImageWithAI() {
             
             // Ocultar modal de procesamiento
             elements.aiProcessingStatus.style.display = 'none';
+            // Ocultar botón de entrada manual
+            if (elements.manualEntryBtn) {
+                elements.manualEntryBtn.style.display = 'none';
+            }
+            
+            // Limpiar el controller
+            aiProcessingController = null;
             
             // Mostrar mensaje de error
-            alert('Error al procesar imagen con IA:\n' + result.error + '\n\nAsegúrate de que LM Studio esté corriendo en http://localhost:1234');
+            alert('Error al procesar imagen con IA:\n' + result.error + '\n\nAsegúrate de que LM Studio esté corriendo en http://192.168.10.238:1234');
             closeAIResultsModal();
             return;
         }
@@ -1771,6 +1800,13 @@ async function processImageWithAI() {
         
         // Ocultar estado de procesamiento
         elements.aiProcessingStatus.style.display = 'none';
+        // Ocultar botón de entrada manual
+        if (elements.manualEntryBtn) {
+            elements.manualEntryBtn.style.display = 'none';
+        }
+        
+        // Limpiar el controller ya que el procesamiento terminó
+        aiProcessingController = null;
         
         // Mostrar formulario con resultados (siempre, incluso si los valores son null)
         if (elements.aiResultsForm) {
@@ -1820,10 +1856,35 @@ async function processImageWithAI() {
         showStatus('Imagen procesada. Revisa y corrige los resultados si es necesario.', 'success');
         
     } catch (error) {
+        // Si el error es por abort, no mostrar mensaje de error
+        if (error.name === 'AbortError' || error.message === 'The user aborted a request.') {
+            console.log('🛑 Procesamiento de IA cancelado por el usuario');
+            // Ocultar estado de procesamiento
+            if (elements.aiProcessingStatus) {
+                elements.aiProcessingStatus.style.display = 'none';
+            }
+            // Ocultar botón de entrada manual
+            if (elements.manualEntryBtn) {
+                elements.manualEntryBtn.style.display = 'none';
+            }
+            // Limpiar el controller
+            aiProcessingController = null;
+            // No cerrar el modal aquí, ya que handleManualEntry lo hará
+            return;
+        }
+        
         console.error('❌ Error procesando imagen con IA:', error);
         showStatus('Error al procesar imagen con IA: ' + error.message, 'error');
         
         elements.aiProcessingStatus.style.display = 'none';
+        // Ocultar botón de entrada manual
+        if (elements.manualEntryBtn) {
+            elements.manualEntryBtn.style.display = 'none';
+        }
+        
+        // Limpiar el controller
+        aiProcessingController = null;
+        
         alert('Error al procesar imagen con IA:\n' + error.message);
         closeAIResultsModal();
     }
@@ -1838,6 +1899,12 @@ function showAIResultsModal() {
 
 // Cerrar modal de resultados de IA
 function closeAIResultsModal() {
+    // Cancelar procesamiento de IA si está en curso
+    if (aiProcessingController) {
+        aiProcessingController.abort();
+        aiProcessingController = null;
+    }
+    
     if (elements.aiResultsModal) {
         elements.aiResultsModal.style.display = 'none';
         
@@ -1860,6 +1927,53 @@ function closeAIResultsModal() {
         elements.aiResultsForm.style.display = 'none';
         elements.confirmAIResultsBtn.style.display = 'none';
     }
+    
+    // Ocultar botón de entrada manual
+    if (elements.manualEntryBtn) {
+        elements.manualEntryBtn.style.display = 'none';
+    }
+}
+
+// Función para manejar la entrada manual de datos
+async function handleManualEntry() {
+    console.log('⌨️ Usuario eligió ingresar datos manualmente');
+    
+    // Marcar que el usuario eligió entrada manual
+    manualEntryRequested = true;
+    
+    // Cancelar procesamiento de IA si está en curso
+    if (aiProcessingController) {
+        aiProcessingController.abort();
+        aiProcessingController = null;
+        console.log('🛑 Procesamiento de IA cancelado');
+    }
+    
+    // Ocultar estado de procesamiento inmediatamente
+    if (elements.aiProcessingStatus) {
+        elements.aiProcessingStatus.style.display = 'none';
+    }
+    
+    // Ocultar botón de entrada manual
+    if (elements.manualEntryBtn) {
+        elements.manualEntryBtn.style.display = 'none';
+    }
+    
+    // Cerrar modal de IA
+    closeAIResultsModal();
+    
+    // Limpiar datos de IA
+    pendingIncidenceData.hasAI = false;
+    pendingIncidenceData.description = null;
+    pendingIncidenceData.stopNumber = null;
+    pendingIncidenceData.fullText = null;
+    
+    // Pequeño delay para asegurar que el modal se cierre completamente
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Mostrar formulario manual (usar sendIncidenceFromPreview directamente)
+    // Esto mostrará los prompts para seleccionar tipo de incidencia y descripción
+    console.log('📝 Abriendo formulario de entrada manual...');
+    await sendIncidenceFromPreview();
 }
 
 // Confirmar resultados de IA y enviar incidencia
@@ -3885,44 +3999,94 @@ async function sendIncidenceFromPreview() {
         console.log('  - pendingIncidenceData completo:', JSON.stringify(pendingIncidenceData));
         
         // Si no hay QR ni audio ni IA, procesar imagen con IA primero
-        if (!hasQRData && !hasAudioData && !hasAIData) {
+        // PERO solo si el usuario NO eligió entrada manual
+        if (!hasQRData && !hasAudioData && !hasAIData && !manualEntryRequested) {
             console.log('🤖 No hay QR, audio ni IA, procesando imagen con IA...');
             await processImageWithAI();
             return; // processImageWithAI() manejará el envío
         } else {
-            console.log('⚠️ Hay datos de QR/audio/IA, saltando procesamiento con IA');
+            if (manualEntryRequested) {
+                console.log('⌨️ Usuario eligió entrada manual, saltando procesamiento con IA');
+                // Resetear la bandera después de usarla
+                manualEntryRequested = false;
+            } else {
+                console.log('⚠️ Hay datos de QR/audio/IA, saltando procesamiento con IA');
+            }
         }
         
-        // Obtener tipos de incidencia disponibles
-        const typesResponse = await fetch('/api/incidence-types');
-        const typesData = await typesResponse.json();
+        // Determinar el tipo de incidencia según el elemento
+        let selectedType = 'EMT'; // Por defecto
         
-        if (!typesData.success) {
-            showStatus('Error al obtener tipos de incidencia: ' + typesData.error, 'error');
-            return;
-        }
-
-        const incidenceTypes = typesData.types;
-        const defaultType = typesData.default_type;
-        
-        // Si solo hay un tipo, usarlo automáticamente
-        let selectedType = defaultType;
-        if (incidenceTypes.length > 1) {
-            // Si hay múltiples tipos, mostrar selector
-            const typeOptions = incidenceTypes.map((type, index) => `${index + 1}. ${type}`).join('\n');
-            const selection = prompt(`Selecciona el tipo de incidencia:\n${typeOptions}\n\nIngresa el número (1-${incidenceTypes.length}):`);
+        // Si es una parada de bus, usar EMT automáticamente
+        if (pendingIncidenceData.isParadaBus) {
+            selectedType = 'EMT';
+            console.log('🚌 Parada de bus detectada, usando tipo EMT automáticamente');
+        } else if (pendingIncidenceData.isMobiliario && !pendingIncidenceData.isParadaBus) {
+            // Si es Mobiliario pero no es parada de bus, pedir selección
+            const typesResponse = await fetch('/api/incidence-types');
+            const typesData = await typesResponse.json();
             
-            if (!selection) {
-                showStatus('Selección de tipo cancelada', 'info');
+            if (!typesData.success) {
+                showStatus('Error al obtener tipos de incidencia: ' + typesData.error, 'error');
                 return;
             }
+
+            // Filtrar solo los tipos permitidos para Mobiliario: EMT, Mobiliario Urbano, Poda
+            const allowedTypes = ['EMT', 'Mobiliario Urbano', 'Poda'];
+            const incidenceTypes = typesData.types.filter(type => allowedTypes.includes(type));
             
-            const typeIndex = parseInt(selection) - 1;
-            if (typeIndex >= 0 && typeIndex < incidenceTypes.length) {
-                selectedType = incidenceTypes[typeIndex];
-            } else {
-                showStatus('Selección inválida', 'error');
+            if (incidenceTypes.length > 1) {
+                // Mostrar selector con los tipos permitidos
+                const typeOptions = incidenceTypes.map((type, index) => `${index + 1}. ${type}`).join('\n');
+                const selection = prompt(`Selecciona el tipo de incidencia:\n${typeOptions}\n\nIngresa el número (1-${incidenceTypes.length}):`);
+                
+                if (!selection) {
+                    showStatus('Selección de tipo cancelada', 'info');
+                    return;
+                }
+                
+                const typeIndex = parseInt(selection) - 1;
+                if (typeIndex >= 0 && typeIndex < incidenceTypes.length) {
+                    selectedType = incidenceTypes[typeIndex];
+                } else {
+                    showStatus('Selección inválida', 'error');
+                    return;
+                }
+            } else if (incidenceTypes.length === 1) {
+                selectedType = incidenceTypes[0];
+            }
+        } else {
+            // Para recursos u otros casos, obtener tipos normalmente
+            const typesResponse = await fetch('/api/incidence-types');
+            const typesData = await typesResponse.json();
+            
+            if (!typesData.success) {
+                showStatus('Error al obtener tipos de incidencia: ' + typesData.error, 'error');
                 return;
+            }
+
+            const incidenceTypes = typesData.types;
+            const defaultType = typesData.default_type;
+            
+            // Si solo hay un tipo, usarlo automáticamente
+            selectedType = defaultType;
+            if (incidenceTypes.length > 1) {
+                // Si hay múltiples tipos, mostrar selector
+                const typeOptions = incidenceTypes.map((type, index) => `${index + 1}. ${type}`).join('\n');
+                const selection = prompt(`Selecciona el tipo de incidencia:\n${typeOptions}\n\nIngresa el número (1-${incidenceTypes.length}):`);
+                
+                if (!selection) {
+                    showStatus('Selección de tipo cancelada', 'info');
+                    return;
+                }
+                
+                const typeIndex = parseInt(selection) - 1;
+                if (typeIndex >= 0 && typeIndex < incidenceTypes.length) {
+                    selectedType = incidenceTypes[typeIndex];
+                } else {
+                    showStatus('Selección inválida', 'error');
+                    return;
+                }
             }
         }
 
@@ -4102,7 +4266,10 @@ function resetUIAfterIncidenceSent() {
         description: null,
         fullText: null,
         hasAudio: false,
-        hasAI: false
+        hasAI: false,
+        isParadaBus: false,
+        isMobiliario: false,
+        elementData: null
     };
     
     // Restablecer botones del modal de foto
@@ -5410,6 +5577,10 @@ async function createIncidenceFromElement(elementIndex) {
         const isMobiliario = element.Tipo === 'Mobiliario' || element.tipo === 'Mobiliario' || 
                             element.NombreVista === 'MobiliarioGis' || element.nombreVista === 'MobiliarioGis';
         
+        // Determinar si es una parada de bus (solo para Mobiliario)
+        const tipoParada = element.TipoParada || element.tipoParada || element['Tipo Parada'] || '';
+        const isParadaBus = isMobiliario && tipoParada && tipoParada.toString().trim().length > 0;
+        
         let elementId = '';
         let elementName = '';
         
@@ -5430,6 +5601,16 @@ async function createIncidenceFromElement(elementIndex) {
         }
         
         currentQRData = elementId;
+        
+        // Guardar información sobre si es parada de bus para usar después
+        if (isParadaBus) {
+            pendingIncidenceData.isParadaBus = true;
+            pendingIncidenceData.stopNumber = elementId;
+        } else {
+            pendingIncidenceData.isParadaBus = false;
+            pendingIncidenceData.elementData = element;
+            pendingIncidenceData.isMobiliario = isMobiliario;
+        }
         
         // Mostrar en la sección de QR
         if (elements.qrData && elements.qrType && elements.qrResults) {

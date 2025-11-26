@@ -403,13 +403,18 @@
                         </div>
                     </div>
                 </div>
-                <div class="modal-footer">
-                    <button id="confirmAIResultsBtn" class="btn btn-success" style="display: none;">
-                        <i class="fas fa-check"></i> Confirmar y Enviar
+                <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+                    <button id="manualEntryBtn" class="btn btn-primary" style="display: none;">
+                        <i class="fas fa-keyboard"></i> Ingresar Datos Manualmente
                     </button>
-                    <button id="cancelAIResultsBtn" class="btn btn-secondary">
-                        <i class="fas fa-times"></i> Cancelar
-                    </button>
+                    <div style="display: flex; gap: 10px; margin-left: auto;">
+                        <button id="confirmAIResultsBtn" class="btn btn-success" style="display: none;">
+                            <i class="fas fa-check"></i> Confirmar y Enviar
+                        </button>
+                        <button id="cancelAIResultsBtn" class="btn btn-secondary">
+                            <i class="fas fa-times"></i> Cancelar
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>

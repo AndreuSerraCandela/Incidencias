@@ -73,8 +73,17 @@ BC_CONFIG = {
 
 # Configuración de tipos de incidencia
 INCIDENCE_CONFIG = {
-    'types': 'EMT',  # Tipos separados por comas: 'EMT,OTRO,TIPO'
+    'types': 'EMT,Mobiliario Urbano,Grupo Taller,Poda',  # Tipos separados por comas
     'default_type': 'EMT'  # Tipo por defecto si no se especifica
+}
+
+# Mapeo de tipos de incidencia para Business Central
+# "Mobiliario Urbano" se envía como "MTO" a Business Central
+INCIDENCE_TYPE_MAPPING = {
+    'Mobiliario Urbano': 'MTO',
+    'Grupo Taller': 'TAREA TALLER',
+    'EMT': 'EMT',
+    'Poda': 'PODA'
 }
 
 # Configuración de búsqueda de elementos cercanos
@@ -136,4 +145,10 @@ def get_default_incidence_type():
     if len(types) == 1:
         return types[0]
     return INCIDENCE_CONFIG.get('default_type', 'EMT')
+
+# Función para mapear tipo de incidencia para Business Central
+def map_incidence_type_for_bc(incidence_type):
+    """Mapea el tipo de incidencia para Business Central.
+    'Mobiliario Urbano' se convierte en 'MTO'"""
+    return INCIDENCE_TYPE_MAPPING.get(incidence_type, incidence_type)
 
