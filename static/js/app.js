@@ -5010,17 +5010,33 @@ async function showNearbyElements() {
         console.log(`📍 Ubicación del usuario obtenida: Lat=${latitude}, Lon=${longitude}`);
         console.log(`📍 Precisión: ${position.accuracy}m`);
         
-        // Inicializar mapa
-        initializeMap(latitude, longitude);
+        // Obtener radio desde la configuración del servidor
+        let searchRadius = 1000; // Valor por defecto
+        try {
+            const configResponse = await fetch('/api/search-config', {
+                method: 'GET',
+                headers: {
+                    'X-Device-ID': deviceId
+                }
+            });
+            if (configResponse.ok) {
+                const configData = await configResponse.json();
+                if (configData.success && configData.config) {
+                    searchRadius = configData.config.default_radius_meters || 1000;
+                }
+            }
+        } catch (error) {
+            console.warn('⚠️ No se pudo obtener la configuración, usando valor por defecto:', error);
+        }
+        console.log(`🔍 Buscando elementos en radio de ${searchRadius}m`);
+        
+        // Inicializar mapa con el radio de la configuración
+        initializeMap(latitude, longitude, searchRadius);
         
         // Obtener elementos cercanos
         if (elements.mapStatus) {
             elements.mapStatus.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Buscando elementos cercanos...';
         }
-        
-        // Buscar en un radio de 100m (puede aumentarse si no encuentra elementos)
-        const searchRadius = 100; // metros
-        console.log(`🔍 Buscando elementos en radio de ${searchRadius}m`);
         const nearbyElements = await getNearbyElements(latitude, longitude, searchRadius);
         
         if (nearbyElements && nearbyElements.success) {
@@ -5036,12 +5052,16 @@ async function showNearbyElements() {
             displayElementsOnMap(nearbyElements.elements);
             
             if (elements.mapStatus) {
-                elements.mapStatus.innerHTML = `<i class="fas fa-check-circle"></i> ${nearbyElements.elements.length} elemento(s) encontrado(s) en un radio de 100m`;
+                const radiusKm = (searchRadius / 1000).toFixed(searchRadius >= 1000 ? 1 : 0);
+                const radiusText = searchRadius >= 1000 ? `${radiusKm}km` : `${searchRadius}m`;
+                elements.mapStatus.innerHTML = `<i class="fas fa-check-circle"></i> ${nearbyElements.elements.length} elemento(s) encontrado(s) en un radio de ${radiusText}`;
             }
         } else {
             console.log('⚠️ No se encontraron elementos cercanos');
             if (elements.mapStatus) {
-                elements.mapStatus.innerHTML = '<i class="fas fa-info-circle"></i> No se encontraron elementos cercanos en un radio de 100m';
+                const radiusKm = (searchRadius / 1000).toFixed(searchRadius >= 1000 ? 1 : 0);
+                const radiusText = searchRadius >= 1000 ? `${radiusKm}km` : `${searchRadius}m`;
+                elements.mapStatus.innerHTML = `<i class="fas fa-info-circle"></i> No se encontraron elementos cercanos en un radio de ${radiusText}`;
             }
         }
         
@@ -5084,7 +5104,7 @@ function getCurrentPosition() {
 }
 
 // Inicializar mapa Leaflet
-function initializeMap(latitude, longitude) {
+function initializeMap(latitude, longitude, radius = 1000) {
     // Limpiar mapa anterior si existe
     if (nearbyMapInstance) {
         nearbyMapInstance.remove();
@@ -5114,12 +5134,12 @@ function initializeMap(latitude, longitude) {
     
     userMarker.bindPopup('<b>Tu ubicación</b>').openPopup();
     
-    // Añadir círculo de radio de 100m
+    // Añadir círculo con el radio de la configuración
     L.circle([latitude, longitude], {
         color: 'blue',
         fillColor: '#3388ff',
         fillOpacity: 0.2,
-        radius: 100
+        radius: radius
     }).addTo(nearbyMapInstance);
 }
 
@@ -5147,7 +5167,61 @@ async function getNearbyElements(latitude, longitude, radius) {
     }
 }
 
-// Mostrar elementos en el mapa
+// Función para obtener el icono según el tipo de elemento
+function getElementIcon(element, isMobiliario) {
+    if (isMobiliario) {
+        // Icono de autobús para Mobiliario
+        return L.divIcon({
+            className: 'custom-marker-icon',
+            html: '<div style="background-color: #ff4444; border-radius: 50%; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"><i class="fas fa-bus" style="color: white; font-size: 16px;"></i></div>',
+            iconSize: [30, 30],
+            iconAnchor: [15, 15],
+            popupAnchor: [0, -15]
+        });
+    } else {
+        // Iconos diferentes según el tipo de recurso
+        const tipoElemento = (element.TipoElemento || element.tipoElemento || '').toUpperCase().trim();
+        
+        // Mapeo de tipos a iconos Font Awesome
+        const iconMap = {
+            'APAR.OB.B': 'fa-building',
+            'ASCENSOR': 'fa-arrow-up',
+            'ASCENSORES': 'fa-arrow-up',
+            'VALLA': 'fa-desktop',
+            'MONOPOSTE': 'fa-sign',
+            'OPIDIGITAL': 'fa-tv',
+            'VPEATON': 'fa-walking',
+            'OPI SMAP': 'fa-mobile-alt',
+            'MEDIANERA': 'fa-building',
+            'MINI OPI': 'fa-mobile-alt',
+            'INDICADOR': 'fa-sign',
+            'OPI': 'fa-mobile-alt',
+            'V.PARKING': 'fa-parking',
+            'V PARKING': 'fa-parking'
+        };
+        
+        // Buscar icono en el mapa (con búsqueda flexible)
+        let iconClass = 'fa-map-marker-alt'; // Icono por defecto
+        for (const [key, value] of Object.entries(iconMap)) {
+            if (tipoElemento.includes(key) || tipoElemento === key) {
+                iconClass = value;
+                break;
+            }
+        }
+        
+        // Color según el tipo (puedes personalizar)
+        const color = '#4CAF50'; // Verde por defecto para recursos
+        
+        return L.divIcon({
+            className: 'custom-marker-icon',
+            html: `<div style="background-color: ${color}; border-radius: 50%; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);"><i class="fas ${iconClass}" style="color: white; font-size: 16px;"></i></div>`,
+            iconSize: [30, 30],
+            iconAnchor: [15, 15],
+            popupAnchor: [0, -15]
+        });
+    }
+}
+
 function displayElementsOnMap(elements) {
     // Limpiar marcadores anteriores
     nearbyMarkers.forEach(marker => {
@@ -5213,20 +5287,12 @@ function displayElementsOnMap(elements) {
             return;
         }
         
-        // Determinar tipo de elemento y color del marcador
+        // Determinar tipo de elemento
         const isMobiliario = element.Tipo === 'Mobiliario' || element.tipo === 'Mobiliario' || 
                             element.NombreVista === 'MobiliarioGis' || element.nombreVista === 'MobiliarioGis';
-        const markerColor = isMobiliario ? 'red' : 'green';
         
-        // Crear icono personalizado
-        const icon = L.icon({
-            iconUrl: `https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-${markerColor}.png`,
-            shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
-            iconSize: [25, 41],
-            iconAnchor: [12, 41],
-            popupAnchor: [1, -34],
-            shadowSize: [41, 41]
-        });
+        // Obtener icono personalizado según el tipo
+        const icon = getElementIcon(element, isMobiliario);
         
         // Crear marcador
         const marker = L.marker([lat, lon], { icon: icon }).addTo(nearbyMapInstance);
@@ -5238,7 +5304,7 @@ function displayElementsOnMap(elements) {
         let elementId = '';
         let elementDescription = '';
         let elementAddress = '';
-        let elementType = isMobiliario ? 'Mobiliario' : 'Recurso Publicitario';
+        let elementType = '';
         
         if (isMobiliario) {
             // MobiliarioGis tiene: Nº Emplazamiento, Descripción, Dirección, Tipo, etc.
@@ -5253,9 +5319,7 @@ function displayElementsOnMap(elements) {
                            element.direccion || element.dirección || '';
             const tipoElemento = element.TipoElemento || element.Tipo || 
                                element.tipoElemento || element.tipo || '';
-            if (tipoElemento) {
-                elementType = `${elementType} - ${tipoElemento}`;
-            }
+            elementType = tipoElemento ? `Mobiliario - ${tipoElemento}` : 'Mobiliario';
         } else {
             // RecursosGIS tiene: No_, Name, PuntoX, PuntoY, Incidencia, Campañas
             elementId = element.NumeroRecurso || element.No_ || 
@@ -5270,6 +5334,12 @@ function displayElementsOnMap(elements) {
                                 element.descripcion || element.descripción || '';
             elementAddress = element.Direccion || element.Dirección || 
                             element.direccion || element.dirección || '';
+            
+            // Usar TipoElemento en lugar de "Recurso Publicitario"
+            const tipoElemento = element.TipoElemento || element.tipoElemento || 
+                               element.Tipo || element.tipo || '';
+            elementType = tipoElemento || 'Recurso Publicitario';
+            
             // Añadir información de campañas si existe
             if (element.Campanas || element.Campañas || element.campanas || element.campañas) {
                 const campanas = element.Campanas || element.Campañas || 

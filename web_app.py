@@ -1356,6 +1356,23 @@ def get_incidence_types():
             'error': f'Error interno: {str(e)}'
         }), 500
 
+@app.route('/api/search-config', methods=['GET'])
+def get_search_config():
+    """
+    Obtener configuración de búsqueda (radio por defecto, límites)
+    """
+    try:
+        from config import SEARCH_CONFIG
+        return jsonify({
+            'success': True,
+            'config': SEARCH_CONFIG
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': f'Error al obtener configuración: {str(e)}'
+        }), 500
+
 @app.route('/api/nearby-elements', methods=['POST'])
 def get_nearby_elements():
     """
@@ -1368,7 +1385,14 @@ def get_nearby_elements():
         data = request.get_json()
         latitude = float(data.get('latitude'))
         longitude = float(data.get('longitude'))
-        radius = float(data.get('radius', 100))  # Radio en metros, por defecto 100m
+        # Obtener radio desde la configuración
+        from config import SEARCH_CONFIG
+        default_radius = SEARCH_CONFIG.get('default_radius_meters', 1000)
+        max_radius = SEARCH_CONFIG.get('max_radius_meters', 5000)
+        min_radius = SEARCH_CONFIG.get('min_radius_meters', 50)
+        radius = float(data.get('radius', default_radius))
+        # Validar que el radio esté dentro de los límites
+        radius = max(min_radius, min(radius, max_radius))
         
         if not latitude or not longitude:
             return jsonify({'success': False, 'error': 'Se requieren coordenadas (latitude, longitude)'}), 400
@@ -1439,6 +1463,7 @@ def query_nearby_elements_from_sql(latitude, longitude, radius_meters):
         # 1 grado de longitud ≈ 111,000 * cos(latitud) metros
         # Aumentar el bounding box un 100% (doble) para asegurar que no se pierdan elementos por redondeo
         # En España, 100m ≈ 0.0009 grados de latitud y ~0.0012 grados de longitud (depende de la latitud)
+        
         lat_degrees = (radius_meters * 2.0) / 111000  # Doble margen para seguridad
         lon_degrees = (radius_meters * 2.0) / (111000 * abs(__import__('math').cos(__import__('math').radians(latitude))))
         
@@ -1495,7 +1520,7 @@ def query_nearby_elements_from_sql(latitude, longitude, radius_meters):
             NULL as NumeroEmplazamiento,
             [Name] as Descripcion,
             NULL as Direccion,
-            NULL as TipoElemento,
+            Tipo as TipoElemento,
             NULL as TipoParada,
             NULL as SAE,
             NULL as BancoMadera,

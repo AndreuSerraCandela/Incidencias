@@ -77,6 +77,13 @@ INCIDENCE_CONFIG = {
     'default_type': 'EMT'  # Tipo por defecto si no se especifica
 }
 
+# Configuración de búsqueda de elementos cercanos
+SEARCH_CONFIG = {
+    'default_radius_meters': 500,  # Radio por defecto en metros (1km)
+    'max_radius_meters': 5000,      # Radio máximo permitido en metros (5km)
+    'min_radius_meters': 50         # Radio mínimo permitido en metros
+}
+
 # Función para obtener la URL completa de la API
 def get_api_url():
     return f"{API_CONFIG['base_url']}{API_CONFIG['endpoint']}"
