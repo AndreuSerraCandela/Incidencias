@@ -160,7 +160,7 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max (aumentado para 
 def compress_image(image_bytes, quality=85, max_size_mb=10):
     """Comprime la imagen si es muy grande"""
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
         import io
         
         # Calcular tamaño en MB
@@ -175,13 +175,23 @@ def compress_image(image_bytes, quality=85, max_size_mb=10):
         # Abrir imagen con PIL
         image = Image.open(io.BytesIO(image_bytes))
         
+        # Aplicar orientación EXIF automáticamente
+        # Esto corrige la rotación según los metadatos EXIF
+        try:
+            image = ImageOps.exif_transpose(image)
+            print(f"🔄 Orientación EXIF aplicada")
+        except Exception as e:
+            print(f"⚠️ No se pudo aplicar orientación EXIF (puede que no tenga): {str(e)}")
+            # Continuar sin aplicar orientación si no hay EXIF
+        
         # Convertir a RGB si es necesario
         if image.mode in ('RGBA', 'LA', 'P'):
             image = image.convert('RGB')
         
         # Comprimir imagen
         output_buffer = io.BytesIO()
-        image.save(output_buffer, format='JPEG', quality=quality, optimize=True)
+        # Guardar sin información EXIF de orientación (ya aplicada en los píxeles)
+        image.save(output_buffer, format='JPEG', quality=quality, optimize=True, exif=b'')
         compressed_bytes = output_buffer.getvalue()
         
         # Calcular tamaño comprimido
