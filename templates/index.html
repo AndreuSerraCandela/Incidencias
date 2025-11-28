@@ -35,46 +35,104 @@
     <!-- EXIF.js para leer metadatos EXIF de imágenes -->
     <script src="https://cdn.jsdelivr.net/npm/exif-js@2.3.0/exif.js"></script>
     <!-- piexifjs para añadir metadatos EXIF a imágenes -->
-    <!-- Intentar múltiples CDNs y versiones para compatibilidad -->
-    <script src="https://cdn.jsdelivr.net/npm/piexifjs@1.3.0/piexif.js" 
-            onerror="console.error('❌ Error cargando piexif desde jsdelivr'); loadPiexifFallback();"></script>
+    <!-- Cargar desde múltiples CDNs con mejor manejo de errores -->
     <script>
-        // Función de fallback para cargar piexif desde otro CDN
-        function loadPiexifFallback() {
-            console.log('🔄 Intentando cargar piexif desde unpkg...');
-            const script = document.createElement('script');
-            script.src = 'https://unpkg.com/piexifjs@1.3.0/piexif.js';
-            script.onload = function() {
-                console.log('✅ piexif cargado desde unpkg (fallback)');
+        (function() {
+            let piexifLoaded = false;
+            
+            // Función para verificar y exponer piexif
+            function exposePiexif() {
+                if (piexifLoaded) return true;
+                
+                // Intentar diferentes formas de acceder a piexif
                 if (typeof piexif !== 'undefined') {
                     window.piexif = piexif;
+                    window.piexifjs = piexif;
+                    piexifLoaded = true;
+                    console.log('✅ piexif encontrado y expuesto globalmente');
+                    return true;
+                } else if (typeof window.piexif !== 'undefined') {
+                    piexifLoaded = true;
+                    console.log('✅ piexif ya está en window.piexif');
+                    return true;
+                } else if (typeof piexifjs !== 'undefined') {
+                    window.piexif = piexifjs;
+                    window.piexifjs = piexifjs;
+                    piexifLoaded = true;
+                    console.log('✅ piexifjs encontrado y expuesto como piexif');
+                    return true;
                 }
-            };
-            script.onerror = function() {
-                console.error('❌ Error también cargando desde unpkg, intentando desde cdnjs...');
-                const script2 = document.createElement('script');
-                script2.src = 'https://cdnjs.cloudflare.com/ajax/libs/piexifjs/1.3.0/piexif.js';
-                script2.onload = function() {
-                    console.log('✅ piexif cargado desde cdnjs (fallback 2)');
-                    if (typeof piexif !== 'undefined') {
-                        window.piexif = piexif;
-                    }
-                };
-                script2.onerror = function() {
-                    console.error('❌ No se pudo cargar piexif desde ningún CDN');
-                };
-                document.head.appendChild(script2);
-            };
-            document.head.appendChild(script);
-        }
-        
-        // Verificar después de un tiempo si se cargó
-        setTimeout(function() {
-            if (typeof piexif === 'undefined' && typeof window.piexif === 'undefined') {
-                console.warn('⚠️ piexif no detectado después de 2 segundos, intentando fallback...');
-                loadPiexifFallback();
+                return false;
             }
-        }, 2000);
+            
+            // Función para cargar piexif desde un CDN
+            function loadPiexifFromCDN(url, cdnName) {
+                return new Promise((resolve, reject) => {
+                    console.log(`🔄 Intentando cargar piexif desde ${cdnName}...`);
+                    const script = document.createElement('script');
+                    script.src = url;
+                    script.async = false; // Cargar de forma síncrona para asegurar disponibilidad
+                    script.onload = function() {
+                        // Esperar un momento para que se ejecute
+                        setTimeout(() => {
+                            if (exposePiexif()) {
+                                console.log(`✅ piexif cargado desde ${cdnName}`);
+                                resolve(true);
+                            } else {
+                                console.warn(`⚠️ piexif cargado desde ${cdnName} pero no se pudo exponer`);
+                                reject(new Error(`piexif no expuesto desde ${cdnName}`));
+                            }
+                        }, 100);
+                    };
+                    script.onerror = function() {
+                        console.error(`❌ Error cargando piexif desde ${cdnName}`);
+                        reject(new Error(`Error cargando desde ${cdnName}`));
+                    };
+                    document.head.appendChild(script);
+                });
+            }
+            
+            // Intentar cargar desde múltiples CDNs en orden
+            async function loadPiexif() {
+                const cdns = [
+                    { url: 'https://cdn.jsdelivr.net/npm/piexifjs@1.3.0/piexif.js', name: 'jsdelivr' },
+                    { url: 'https://unpkg.com/piexifjs@1.3.0/piexif.js', name: 'unpkg' },
+                    { url: 'https://cdnjs.cloudflare.com/ajax/libs/piexifjs/1.3.0/piexif.js', name: 'cdnjs' }
+                ];
+                
+                // Primero verificar si ya está cargado
+                if (exposePiexif()) {
+                    return;
+                }
+                
+                // Intentar cargar desde cada CDN
+                for (const cdn of cdns) {
+                    try {
+                        await loadPiexifFromCDN(cdn.url, cdn.name);
+                        return; // Si se cargó exitosamente, salir
+                    } catch (error) {
+                        console.warn(`⚠️ Falló carga desde ${cdn.name}, intentando siguiente...`);
+                        continue;
+                    }
+                }
+                
+                // Si todos fallaron, mostrar error
+                console.error('❌ No se pudo cargar piexif desde ningún CDN');
+            }
+            
+            // Cargar inmediatamente
+            loadPiexif();
+            
+            // También verificar después de que la página cargue completamente
+            window.addEventListener('load', function() {
+                if (!piexifLoaded) {
+                    console.warn('⚠️ piexif no cargado después de load, reintentando...');
+                    loadPiexif();
+                } else {
+                    exposePiexif(); // Asegurar que esté expuesto
+                }
+            });
+        })();
     </script>
     <script>
         // Función para mostrar mensajes de consola en pantalla (PROVISIONAL)

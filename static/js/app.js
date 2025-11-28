@@ -40,6 +40,17 @@ let pendingIncidenceData = {
     elementData: null
 };
 
+// Variable para almacenar la orientación capturada al presionar el botón de la cámara
+let capturedOrientation = null;
+
+// Variable para almacenar la orientación actual del dispositivo (se actualiza en tiempo real)
+let currentDeviceOrientation = null;
+let currentDeviceOrientationAngle = null;
+
+// Variables para DeviceOrientationEvent (acelerómetro/giroscopio)
+let deviceOrientationData = null;
+let deviceOrientationPermissionGranted = false;
+
 // Elementos del DOM
 let elements = {};
 
@@ -300,8 +311,102 @@ document.addEventListener('visibilitychange', () => {
 // No activar automáticamente cuando se abre la app normalmente
 // Solo activar cuando hay explícitamente el parámetro action=voice en la URL
 
+// Configurar listener de orientación del dispositivo usando DeviceOrientationEvent (acelerómetro)
+function setupOrientationListener() {
+    // Usar DeviceOrientationEvent que usa el acelerómetro/giroscopio del dispositivo
+    // Esto funciona incluso si la app está bloqueada en una orientación
+    if (window.DeviceOrientationEvent) {
+        // Solicitar permiso si es necesario (iOS 13+)
+        if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+            console.log('📱 Solicitando permiso para DeviceOrientationEvent...');
+            DeviceOrientationEvent.requestPermission()
+                .then(response => {
+                    if (response === 'granted') {
+                        deviceOrientationPermissionGranted = true;
+                        startDeviceOrientationListener();
+                    } else {
+                        console.warn('⚠️ Permiso para DeviceOrientationEvent denegado');
+                    }
+                })
+                .catch(error => {
+                    console.error('❌ Error solicitando permiso:', error);
+                });
+        } else {
+            // No se requiere permiso, iniciar directamente
+            startDeviceOrientationListener();
+        }
+    } else {
+        console.warn('⚠️ DeviceOrientationEvent no está disponible');
+    }
+    
+    function startDeviceOrientationListener() {
+        window.addEventListener('deviceorientation', (event) => {
+            // Guardar datos de orientación
+            deviceOrientationData = {
+                alpha: event.alpha, // Rotación Z (0-360)
+                beta: event.beta,   // Inclinación frontal (-180 a 180)
+                gamma: event.gamma  // Inclinación lateral (-90 a 90)
+            };
+            
+            // Determinar orientación basado en beta y gamma
+            // beta: -180 a 180 (0 = horizontal, 90 = vertical hacia arriba, -90 = vertical hacia abajo)
+            // gamma: -90 a 90 (0 = vertical, positivo = inclinado a la derecha, negativo = inclinado a la izquierda)
+            
+            const beta = event.beta || 0;
+            const gamma = event.gamma || 0;
+            const absBeta = Math.abs(beta);
+            const absGamma = Math.abs(gamma);
+            
+            // Lógica mejorada:
+            // - Si beta está cerca de 0 (horizontal) y gamma es significativo = horizontal
+            // - Si beta es significativo (vertical) y gamma está cerca de 0 = vertical
+            // - Si ambos son significativos, usar el más grande
+            
+            if (absBeta < 30 && absGamma > 20) {
+                // Horizontal (landscape) - dispositivo acostado
+                currentDeviceOrientation = 1;
+               // console.log('🔄 Orientación detectada (DeviceOrientation): LANDSCAPE/HORIZONTAL', `(beta: ${beta.toFixed(1)}°, gamma: ${gamma.toFixed(1)}°)`);
+            } else if (absBeta > 50 && absGamma < 40) {
+                // Vertical (portrait) - dispositivo de pie
+                currentDeviceOrientation = 6;
+               // console.log('🔄 Orientación detectada (DeviceOrientation): PORTRAIT/VERTICAL', `(beta: ${beta.toFixed(1)}°, gamma: ${gamma.toFixed(1)}°)`);
+            } else if (absBeta > absGamma) {
+                // beta domina = más vertical
+                currentDeviceOrientation = 6;
+              //  console.log('🔄 Orientación detectada (DeviceOrientation): PORTRAIT/VERTICAL (beta domina)', `(beta: ${beta.toFixed(1)}°, gamma: ${gamma.toFixed(1)}°)`);
+            } else if (absGamma > absBeta) {
+                // gamma domina = más horizontal
+                currentDeviceOrientation = 1;
+              //  console.log('🔄 Orientación detectada (DeviceOrientation): LANDSCAPE/HORIZONTAL (gamma domina)', `(beta: ${beta.toFixed(1)}°, gamma: ${gamma.toFixed(1)}°)`);
+            }
+        });
+        
+      //  console.log('✅ DeviceOrientationEvent listener iniciado');
+    }
+    
+    // También escuchar cambios de window.orientation como respaldo
+    if (window.orientation !== undefined) {
+        window.addEventListener('orientationchange', () => {
+            const angle = window.orientation;
+            const absAngle = Math.abs(angle);
+            
+            // Solo usar si DeviceOrientationEvent no está disponible o no ha detectado nada
+            if (!deviceOrientationData) {
+                if (absAngle === 0 || absAngle === 180) {
+                    currentDeviceOrientation = 1; // Landscape
+                } else if (absAngle === 90) {
+                    currentDeviceOrientation = 6; // Portrait
+                }
+                console.log('🔄 Orientación actualizada (window.orientation):', currentDeviceOrientation, `(${angle}°)`);
+            }
+        });
+    }
+}
+
 // Configurar event listeners
 function initializeEventListeners() {
+    // Configurar listener de orientación primero
+    setupOrientationListener();
     // Botones principales
     if (elements.takePhotoBtn) {
         elements.takePhotoBtn.addEventListener('click', () => {
@@ -358,7 +463,25 @@ function initializeEventListeners() {
     
     // AGREGAR EVENT LISTENERS PARA LOS BOTONES DE FOTO
     if (elements.capturePhotoBtn) {
-        elements.capturePhotoBtn.addEventListener('click', capturePhoto);
+        elements.capturePhotoBtn.addEventListener('click', () => {
+            // Capturar la orientación del dispositivo en el momento exacto de presionar el botón
+            console.log('📱 Capturando orientación al presionar botón de cámara...');
+            console.log('   DeviceOrientationData disponible:', deviceOrientationData !== null);
+            console.log('   currentDeviceOrientation:', currentDeviceOrientation);
+            
+            // Usar la orientación detectada por DeviceOrientationEvent si está disponible
+            if (currentDeviceOrientation !== null) {
+                capturedOrientation = currentDeviceOrientation;
+                console.log('✅ Orientación capturada desde DeviceOrientationEvent:', capturedOrientation, capturedOrientation === 1 ? 'LANDSCAPE/HORIZONTAL' : 'PORTRAIT/VERTICAL');
+            } else {
+                // Si no está disponible, detectarla ahora
+                capturedOrientation = detectDeviceOrientation();
+                console.log('✅ Orientación capturada mediante detección:', capturedOrientation, capturedOrientation === 1 ? 'LANDSCAPE/HORIZONTAL' : 'PORTRAIT/VERTICAL');
+            }
+            
+            // Llamar a capturePhoto después de capturar la orientación
+            capturePhoto();
+        });
     }
     if (elements.importPhotoBtn) {
         elements.importPhotoBtn.addEventListener('click', () => {
@@ -753,92 +876,74 @@ function captureQRImage() {
 }
 
 // Función para detectar la orientación del dispositivo
+// Esta función se llama cuando se presiona el botón de la cámara para capturar la orientación en tiempo real
 function detectDeviceOrientation() {
-    let orientation = 1; // Por defecto, normal
+    let orientation = 1; // Por defecto, normal (landscape/horizontal)
     
     try {
-        let detectedAngle = null;
         let detectionMethod = 'none';
         
         // DEBUG: Mostrar información de orientación disponible
-        console.log('🔍 DEBUG Orientación - screen.orientation:', screen.orientation);
-        console.log('🔍 DEBUG Orientación - window.orientation:', window.orientation);
-        console.log('🔍 DEBUG Orientación - innerWidth x innerHeight:', window.innerWidth, 'x', window.innerHeight);
+       // IMPORTANTE: Usar DeviceOrientationEvent (acelerómetro) como método principal
+        // porque funciona incluso si la app está bloqueada en una orientación
         
-        // Método 1: Screen Orientation API (más moderno y preciso)
-        if (screen.orientation && screen.orientation.angle !== undefined) {
-            detectedAngle = screen.orientation.angle;
-            detectionMethod = 'Screen Orientation API';
-            console.log('📱 Orientación detectada (Screen API):', detectedAngle, '°');
+        // MÉTODO PRINCIPAL: DeviceOrientationEvent (acelerómetro/giroscopio - más confiable)
+        // Esta es la forma más precisa de detectar la orientación física del dispositivo
+        if (deviceOrientationData && currentDeviceOrientation !== null) {
+            orientation = currentDeviceOrientation;
+            detectionMethod = 'DeviceOrientationEvent (acelerómetro) - PRINCIPAL';
+            //console.log('📱 Orientación detectada por DeviceOrientationEvent:', orientation === 1 ? 'LANDSCAPE/HORIZONTAL' : 'PORTRAIT/VERTICAL');
+            //console.log('   Datos del acelerómetro:', deviceOrientationData);
+            //console.log('   Esta orientación se guardará en el EXIF de la foto');
         }
-        // Método 2: window.orientation (legacy, para móviles)
+        // Método secundario: window.orientation (puede no cambiar si la app está bloqueada)
         else if (window.orientation !== undefined && window.orientation !== null) {
-            detectedAngle = window.orientation;
-            detectionMethod = 'window.orientation';
-            console.log('📱 Orientación detectada (window.orientation):', detectedAngle, '°');
+            const absAngle = Math.abs(window.orientation);
+            
+            console.log('🔍 DEBUG: window.orientation ACTUAL:', window.orientation, '° (abs:', absAngle, '°)');
+            
+            // 0° o 180° = landscape, 90° o -90° = portrait
+            if (absAngle === 0 || absAngle === 180) {
+                orientation = 1; // Landscape
+                detectionMethod = 'window.orientation (landscape) - FALLBACK';
+                //console.log('📱 Orientación detectada por window.orientation (FALLBACK): LANDSCAPE/HORIZONTAL');
+            } else if (absAngle === 90) {
+                orientation = 6; // Portrait
+                detectionMethod = 'window.orientation (portrait) - FALLBACK';
+                //console.log('📱 Orientación detectada por window.orientation (FALLBACK): PORTRAIT/VERTICAL');
+            }
         }
-        // Método alternativo: Usar dimensiones de la ventana
-        else {
-            const isPortraitWindow = window.innerHeight > window.innerWidth;
-            if (isPortraitWindow) {
-                detectedAngle = 90; // Asumir portrait = 90°
-                detectionMethod = 'Window dimensions';
-                console.log('📱 Orientación detectada por dimensiones de ventana: Portrait -> 90°');
-            } else {
-                detectedAngle = 0; // Asumir landscape = 0°
-                detectionMethod = 'Window dimensions';
-                console.log('📱 Orientación detectada por dimensiones de ventana: Landscape -> 0°');
+        // Método terciario: screen.orientation.angle (puede no cambiar si la app está bloqueada)
+        else if (screen.orientation && screen.orientation.angle !== undefined) {
+            const angle = screen.orientation.angle;
+            const normalizedAngle = ((angle % 360) + 360) % 360;
+            
+            //console.log('🔍 DEBUG: Ángulo actual de Screen Orientation API:', angle, '° (normalizado:', normalizedAngle, '°)');
+            
+            if (normalizedAngle === 0 || normalizedAngle === 180) {
+                orientation = 1; // Landscape
+                detectionMethod = 'Screen Orientation API angle (landscape) - FALLBACK';
+                //console.log('📱 Orientación detectada por ángulo (FALLBACK): LANDSCAPE/HORIZONTAL');
+            } else if (normalizedAngle === 90 || normalizedAngle === 270) {
+                orientation = 6; // Portrait
+                detectionMethod = 'Screen Orientation API angle (portrait) - FALLBACK';
+                //console.log('📱 Orientación detectada por ángulo (FALLBACK): PORTRAIT/VERTICAL');
             }
         }
         
-        // Mapear ángulo detectado a orientación EXIF
-        if (detectedAngle !== null) {
-            // Normalizar ángulo a rango 0-360
-            let normalizedAngle = detectedAngle;
-            while (normalizedAngle < 0) normalizedAngle += 360;
-            normalizedAngle = normalizedAngle % 360;
-            
-            // EXIF Orientation values:
-            // 1 = Normal (0°) - Landscape
-            // 3 = Rotated 180°
-            // 6 = Rotated 90° clockwise (portrait, desde landscape)
-            // 8 = Rotated 90° counter-clockwise
-            
-            if (normalizedAngle === 0 || normalizedAngle === 360) {
-                orientation = 1; // Normal (landscape)
-            } else if (normalizedAngle === 90) {
-                orientation = 6; // Rotada 90° en sentido horario (portrait)
-            } else if (normalizedAngle === 180) {
-                orientation = 3; // Rotada 180°
-            } else if (normalizedAngle === 270) {
-                orientation = 8; // Rotada 90° en sentido antihorario
-            }
-            
-            console.log(`✅ Orientación EXIF calculada (${detectionMethod}): ${orientation} (ángulo normalizado: ${normalizedAngle}°)`);
-        } else {
-            // Método 3: Detectar por dimensiones del video como fallback
-            if (elements.photoVideo && elements.photoVideo.videoWidth && elements.photoVideo.videoHeight) {
-                const isLandscape = elements.photoVideo.videoWidth > elements.photoVideo.videoHeight;
-                const isPortrait = elements.photoVideo.videoHeight > elements.photoVideo.videoWidth;
-                
-                if (isPortrait) {
-                    orientation = 6; // Si es portrait, probablemente necesita rotación
-                    console.log('📱 Orientación detectada por dimensiones de video: Portrait -> 6');
-                } else {
-                    orientation = 1; // Landscape normal
-                    console.log('📱 Orientación detectada por dimensiones de video: Landscape -> 1');
-                }
-            } else {
-                console.log('⚠️ No se pudo detectar orientación, usando valor por defecto: 1');
-            }
+        // Verificación: Mostrar dimensiones del video (solo para debug)
+        if (elements.photoVideo && elements.photoVideo.videoWidth && elements.photoVideo.videoHeight) {
+            //console.log('🔍 DEBUG: Dimensiones de video (cámara):', elements.photoVideo.videoWidth, 'x', elements.photoVideo.videoHeight);
         }
         
-        console.log('🎯 ORIENTACIÓN FINAL DETECTADA:', orientation);
+        // Mostrar resultado final
+        //console.log('✅ Orientación EXIF:', orientation, orientation === 1 ? '(LANDSCAPE/HORIZONTAL)' : '(PORTRAIT/VERTICAL)');
+        //console.log('🎯 ORIENTACIÓN FINAL DETECTADA:', orientation, `(${detectionMethod})`);
         return orientation;
         
     } catch (error) {
         console.error('Error al detectar orientación:', error);
-        return 1; // Por defecto, normal
+        return 1; // Por defecto, normal (landscape)
     }
 }
 
@@ -948,7 +1053,8 @@ async function addBasicEXIFToImage(imageDataUrl, orientationOverride = null) {
         // La orientación debe estar tanto en ImageIFD (0th) como en ExifIFD según el estándar
         zeroth[piexifLib.ImageIFD.Orientation] = detectedOrientation;
         exif[piexifLib.ExifIFD.Orientation] = detectedOrientation;
-        console.log('📐 Orientación EXIF establecida:', detectedOrientation);
+        console.log('📐 Orientación EXIF establecida en metadatos:', detectedOrientation, detectedOrientation === 1 ? '(LANDSCAPE/HORIZONTAL)' : '(PORTRAIT/VERTICAL)');
+        console.log('   Esta orientación se guardará en el EXIF de la foto para que pueda leerse después');
         
         const exifObj = {
             '0th': zeroth,
@@ -964,6 +1070,9 @@ async function addBasicEXIFToImage(imageDataUrl, orientationOverride = null) {
         
         // Convertir de nuevo a base64
         const newBase64 = btoa(newBinaryString);
+        
+        console.log('✅ EXIF añadido a la imagen con orientación:', detectedOrientation, detectedOrientation === 1 ? '(LANDSCAPE/HORIZONTAL)' : '(PORTRAIT/VERTICAL)');
+        console.log('   La foto ahora contiene metadatos EXIF que pueden leerse para determinar la orientación');
         
         return 'data:image/jpeg;base64,' + newBase64;
         
@@ -1087,7 +1196,9 @@ async function capturePhoto() {
                             } else {
                                 // Si no tiene EXIF nativo o no tiene orientación, añadirlo
                                 console.log('📝 Añadiendo EXIF con orientación a foto de ImageCapture...');
-                                const detectedOrientation = detectDeviceOrientation();
+                                // Usar la orientación capturada al presionar el botón, o detectarla ahora si no está disponible
+                                const detectedOrientation = capturedOrientation !== null ? capturedOrientation : detectDeviceOrientation();
+                                console.log('📐 Usando orientación:', detectedOrientation, capturedOrientation !== null ? '(capturada al presionar botón)' : '(detectada ahora)');
                                 addBasicEXIFToImage(imageData, detectedOrientation).then((newImageData) => {
                                     imageData = newImageData;
                                     hasEXIF = true;
@@ -1112,7 +1223,9 @@ async function capturePhoto() {
                 } catch (exifError) {
                     console.log('⚠️ No se pudo leer EXIF de la foto capturada, añadiendo EXIF básico:', exifError);
                     // Añadir EXIF básico si no se pudo leer
-                    const detectedOrientation = detectDeviceOrientation();
+                    // Usar la orientación capturada al presionar el botón, o detectarla ahora si no está disponible
+                    const detectedOrientation = capturedOrientation !== null ? capturedOrientation : detectDeviceOrientation();
+                    console.log('📐 Usando orientación:', detectedOrientation, capturedOrientation !== null ? '(capturada al presionar botón)' : '(detectada ahora)');
                     imageData = await addBasicEXIFToImage(imageData, detectedOrientation);
                     hasEXIF = true;
                 }
@@ -1140,11 +1253,11 @@ async function capturePhoto() {
             
             imageData = canvas.toDataURL('image/jpeg', 0.9);
             
-            // Detectar orientación antes de añadir EXIF
-            console.log('🔍 DEBUG: Detectando orientación en el momento de captura...');
+            // Usar la orientación capturada al presionar el botón, o detectarla ahora si no está disponible
+            console.log('🔍 DEBUG: Usando orientación capturada al presionar botón...');
             console.log('🔍 DEBUG: videoWidth x videoHeight:', elements.photoVideo.videoWidth, 'x', elements.photoVideo.videoHeight);
-            const detectedOrientation = detectDeviceOrientation();
-            console.log('📐 Orientación detectada para EXIF:', detectedOrientation);
+            const detectedOrientation = capturedOrientation !== null ? capturedOrientation : detectDeviceOrientation();
+            console.log('📐 Orientación para EXIF:', detectedOrientation, capturedOrientation !== null ? '(capturada al presionar botón)' : '(detectada ahora)');
             
             // Añadir metadatos EXIF básicos manualmente con orientación correcta
             console.log('📝 Añadiendo metadatos EXIF básicos con orientación:', detectedOrientation);
@@ -1165,6 +1278,9 @@ async function capturePhoto() {
                 });
             }, 500);
         }
+        
+        // Limpiar la orientación capturada después de usarla
+        capturedOrientation = null;
         
         // Verificar el modo: 'reportar' o 'añadir'
         if (photoMode === 'reportar') {
