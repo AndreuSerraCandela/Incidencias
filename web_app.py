@@ -158,7 +158,7 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max (aumentado para múltiples imágenes)
 
 def compress_image(image_bytes, quality=85, max_size_mb=10):
-    """Comprime la imagen si es muy grande"""
+    """Comprime la imagen si es muy grande y siempre aplica corrección EXIF"""
     try:
         from PIL import Image, ImageOps
         import io
@@ -167,12 +167,7 @@ def compress_image(image_bytes, quality=85, max_size_mb=10):
         size_mb = len(image_bytes) / (1024 * 1024)
         print(f"📊 Tamaño original de imagen: {size_mb:.2f} MB")
         
-        # Si la imagen es menor al tamaño máximo, no comprimir
-        if size_mb <= max_size_mb:
-            print(f"✅ Imagen dentro del límite, no se comprime")
-            return image_bytes
-        
-        # Abrir imagen con PIL
+        # Abrir imagen con PIL para aplicar EXIF siempre
         image = Image.open(io.BytesIO(image_bytes))
         
         # Aplicar orientación EXIF automáticamente
@@ -188,7 +183,16 @@ def compress_image(image_bytes, quality=85, max_size_mb=10):
         if image.mode in ('RGBA', 'LA', 'P'):
             image = image.convert('RGB')
         
-        # Comprimir imagen
+        # Si la imagen es menor al tamaño máximo, solo aplicar EXIF y retornar
+        if size_mb <= max_size_mb:
+            print(f"✅ Imagen dentro del límite, solo se aplica EXIF")
+            output_buffer = io.BytesIO()
+            # Guardar sin información EXIF de orientación (ya aplicada en los píxeles)
+            image.save(output_buffer, format='JPEG', quality=quality, optimize=True, exif=b'')
+            processed_bytes = output_buffer.getvalue()
+            return processed_bytes
+        
+        # Comprimir imagen si es muy grande
         output_buffer = io.BytesIO()
         # Guardar sin información EXIF de orientación (ya aplicada en los píxeles)
         image.save(output_buffer, format='JPEG', quality=quality, optimize=True, exif=b'')
@@ -243,6 +247,64 @@ def extract_qr_id(qr_data):
         print(f"QR original: {qr_data}")
         print(f"ID extraído: {qr_id}")
         return qr_id
+
+def extract_exif_data(image_bytes):
+    """Extrae información EXIF de una imagen (AVISO PROVISIONAL)"""
+    try:
+        from PIL import Image
+        from PIL.ExifTags import TAGS, GPSTAGS
+        import io
+        
+        # Abrir imagen
+        image = Image.open(io.BytesIO(image_bytes))
+        
+        # Obtener EXIF
+        exif_data = {}
+        if hasattr(image, '_getexif') and image._getexif() is not None:
+            exif_dict = image._getexif()
+            
+            for tag_id, value in exif_dict.items():
+                tag = TAGS.get(tag_id, tag_id)
+                
+                # Información básica
+                if tag in ['Make', 'Model', 'DateTime', 'DateTimeOriginal', 'Orientation']:
+                    exif_data[tag] = str(value) if value else None
+                
+                # Configuración de cámara
+                if tag in ['FNumber', 'ExposureTime', 'ISOSpeedRatings', 'FocalLength']:
+                    if tag == 'FNumber':
+                        exif_data[tag] = f"{value[0]}/{value[1]}" if isinstance(value, tuple) else str(value)
+                    elif tag == 'ExposureTime':
+                        exif_data[tag] = f"{value[0]}/{value[1]}" if isinstance(value, tuple) else str(value)
+                    elif tag == 'FocalLength':
+                        exif_data[tag] = f"{value[0]}/{value[1]}mm" if isinstance(value, tuple) else f"{value}mm"
+                    else:
+                        exif_data[tag] = str(value) if value else None
+                
+                # GPS
+                if tag == 'GPSInfo':
+                    gps_data = {}
+                    for gps_tag_id, gps_value in value.items():
+                        gps_tag = GPSTAGS.get(gps_tag_id, gps_tag_id)
+                        gps_data[gps_tag] = str(gps_value) if gps_value else None
+                    if gps_data:
+                        exif_data['GPS'] = gps_data
+                
+                # Dimensiones
+                if tag in ['PixelXDimension', 'PixelYDimension']:
+                    exif_data[tag] = str(value) if value else None
+        
+        # Si no hay EXIF, intentar obtener dimensiones de la imagen
+        if not exif_data:
+            exif_data['Width'] = str(image.width)
+            exif_data['Height'] = str(image.height)
+            exif_data['Format'] = image.format
+        
+        return exif_data if exif_data else None
+        
+    except Exception as e:
+        print(f"⚠️ Error al extraer EXIF: {str(e)}")
+        return None
     else:
         # Si no contiene 'IdQr/', usar el valor completo
         print(f"QR no contiene 'IdQr/', usando valor completo: {qr_data}")
@@ -332,6 +394,13 @@ def process_photo():
                 image_data = image_data.split(',')[1]
             image_bytes = base64.b64decode(image_data)
         
+        # AVISO PROVISIONAL: Extraer EXIF de la imagen original antes de procesarla
+        exif_info = extract_exif_data(image_bytes)
+        if exif_info:
+            print(f"📸 EXIF extraído: {exif_info}")
+        else:
+            print(f"⚠️ No se encontró información EXIF en la imagen")
+        
         # Comprimir imagen si es muy grande
         from config import BC_CONFIG
         compressed_image_bytes = compress_image(
@@ -401,7 +470,7 @@ def process_photo():
         
         print(f"Proceso iniciado en segundo plano para archivo: {filename}")
         
-        return jsonify({
+        response_data = {
             'success': True,
             'message': 'Foto procesada. Se enviará a Business Central en segundo plano.',
             'filename': filename,
@@ -409,7 +478,14 @@ def process_photo():
             'qr_id_extracted': qr_id,
             'status': 'processing_in_background',
             'task_used': selected_task
-        })
+        }
+        
+        # AVISO PROVISIONAL: Incluir información EXIF en la respuesta
+        if exif_info:
+            response_data['exif_info'] = exif_info
+            response_data['exif_warning'] = '⚠️ AVISO PROVISIONAL: Esta información EXIF NO se está grabando en el servidor.'
+        
+        return jsonify(response_data)
         
     except Exception as e:
         return jsonify({'error': f'Error al procesar foto: {str(e)}'}), 500
@@ -2622,7 +2698,7 @@ def process_image_with_lm_studio(image_base64):
         if base64_size_mb > 5:
             print(f"⚠️ Imagen muy grande ({base64_size_mb:.2f} MB), reduciendo tamaño...")
             try:
-                from PIL import Image
+                from PIL import Image, ImageOps
                 import io
                 
                 # Decodificar base64 a bytes
@@ -2630,6 +2706,19 @@ def process_image_with_lm_studio(image_base64):
                 
                 # Abrir imagen con PIL
                 img = Image.open(io.BytesIO(image_bytes))
+                
+                # Aplicar orientación EXIF automáticamente
+                # Esto corrige la rotación según los metadatos EXIF
+                try:
+                    img = ImageOps.exif_transpose(img)
+                    print(f"🔄 Orientación EXIF aplicada en procesamiento LM Studio")
+                except Exception as e:
+                    print(f"⚠️ No se pudo aplicar orientación EXIF (puede que no tenga): {str(e)}")
+                    # Continuar sin aplicar orientación si no hay EXIF
+                
+                # Convertir a RGB si es necesario
+                if img.mode in ('RGBA', 'LA', 'P'):
+                    img = img.convert('RGB')
                 
                 # Reducir tamaño si es muy grande (max 1024px en el lado más largo)
                 max_size = 1024
@@ -2639,7 +2728,8 @@ def process_image_with_lm_studio(image_base64):
                 
                 # Convertir de nuevo a base64 con calidad reducida
                 output = io.BytesIO()
-                img.save(output, format='JPEG', quality=85, optimize=True)
+                # Guardar sin información EXIF de orientación (ya aplicada en los píxeles)
+                img.save(output, format='JPEG', quality=85, optimize=True, exif=b'')
                 image_bytes = output.getvalue()
                 image_base64 = base64.b64encode(image_bytes).decode('utf-8')
                 

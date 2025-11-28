@@ -32,6 +32,156 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- EXIF.js para leer metadatos EXIF de imágenes -->
+    <script src="https://cdn.jsdelivr.net/npm/exif-js@2.3.0/exif.js"></script>
+    <!-- piexifjs para añadir metadatos EXIF a imágenes -->
+    <!-- Intentar múltiples CDNs y versiones para compatibilidad -->
+    <script src="https://cdn.jsdelivr.net/npm/piexifjs@1.3.0/piexif.js" 
+            onerror="console.error('❌ Error cargando piexif desde jsdelivr'); loadPiexifFallback();"></script>
+    <script>
+        // Función de fallback para cargar piexif desde otro CDN
+        function loadPiexifFallback() {
+            console.log('🔄 Intentando cargar piexif desde unpkg...');
+            const script = document.createElement('script');
+            script.src = 'https://unpkg.com/piexifjs@1.3.0/piexif.js';
+            script.onload = function() {
+                console.log('✅ piexif cargado desde unpkg (fallback)');
+                if (typeof piexif !== 'undefined') {
+                    window.piexif = piexif;
+                }
+            };
+            script.onerror = function() {
+                console.error('❌ Error también cargando desde unpkg, intentando desde cdnjs...');
+                const script2 = document.createElement('script');
+                script2.src = 'https://cdnjs.cloudflare.com/ajax/libs/piexifjs/1.3.0/piexif.js';
+                script2.onload = function() {
+                    console.log('✅ piexif cargado desde cdnjs (fallback 2)');
+                    if (typeof piexif !== 'undefined') {
+                        window.piexif = piexif;
+                    }
+                };
+                script2.onerror = function() {
+                    console.error('❌ No se pudo cargar piexif desde ningún CDN');
+                };
+                document.head.appendChild(script2);
+            };
+            document.head.appendChild(script);
+        }
+        
+        // Verificar después de un tiempo si se cargó
+        setTimeout(function() {
+            if (typeof piexif === 'undefined' && typeof window.piexif === 'undefined') {
+                console.warn('⚠️ piexif no detectado después de 2 segundos, intentando fallback...');
+                loadPiexifFallback();
+            }
+        }, 2000);
+    </script>
+    <script>
+        // Función para mostrar mensajes de consola en pantalla (PROVISIONAL)
+        window.debugMessages = [];
+        const originalConsoleLog = console.log;
+        const originalConsoleError = console.error;
+        const originalConsoleWarn = console.warn;
+        
+        function addDebugMessage(type, message) {
+            const timestamp = new Date().toLocaleTimeString();
+            window.debugMessages.push(`[${timestamp}] ${type}: ${message}`);
+            // Mantener solo los últimos 20 mensajes
+            if (window.debugMessages.length > 20) {
+                window.debugMessages.shift();
+            }
+            // Actualizar display si existe
+            updateDebugDisplay();
+        }
+        
+        function updateDebugDisplay() {
+            let debugDiv = document.getElementById('debugConsole');
+            if (!debugDiv) {
+                debugDiv = document.createElement('div');
+                debugDiv.id = 'debugConsole';
+                debugDiv.style.cssText = `
+                    position: fixed;
+                    bottom: 10px;
+                    left: 10px;
+                    right: 10px;
+                    max-height: 200px;
+                    overflow-y: auto;
+                    background: rgba(0, 0, 0, 0.8);
+                    color: #0f0;
+                    padding: 10px;
+                    font-family: monospace;
+                    font-size: 11px;
+                    z-index: 10000;
+                    border: 2px solid #0f0;
+                    border-radius: 5px;
+                    display: none;
+                `;
+                document.body.appendChild(debugDiv);
+                
+                // Botón para mostrar/ocultar
+                const toggleBtn = document.createElement('button');
+                toggleBtn.textContent = '🔍 Debug';
+                toggleBtn.style.cssText = `
+                    position: fixed;
+                    bottom: 10px;
+                    left: 10px;
+                    background: #0f0;
+                    color: #000;
+                    border: none;
+                    padding: 5px 10px;
+                    border-radius: 3px;
+                    cursor: pointer;
+                    z-index: 10001;
+                    font-weight: bold;
+                `;
+                toggleBtn.onclick = () => {
+                    debugDiv.style.display = debugDiv.style.display === 'none' ? 'block' : 'none';
+                };
+                document.body.appendChild(toggleBtn);
+            }
+            debugDiv.innerHTML = window.debugMessages.slice(-10).join('<br>');
+        }
+        
+        // Interceptar console.log, error, warn
+        console.log = function(...args) {
+            originalConsoleLog.apply(console, args);
+            const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+            if (message.includes('DEBUG') || message.includes('Orientación') || message.includes('piexif') || message.includes('EXIF')) {
+                addDebugMessage('LOG', message);
+            }
+        };
+        
+        console.error = function(...args) {
+            originalConsoleError.apply(console, args);
+            const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+            addDebugMessage('ERROR', message);
+        };
+        
+        console.warn = function(...args) {
+            originalConsoleWarn.apply(console, args);
+            const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg) : String(arg)).join(' ');
+            addDebugMessage('WARN', message);
+        };
+        
+        // Asegurar que piexif esté disponible globalmente
+        window.addEventListener('load', function() {
+            console.log('🔍 Verificando carga de piexif después de load...');
+            console.log('   typeof piexif:', typeof piexif);
+            console.log('   typeof window.piexif:', typeof window.piexif);
+            console.log('   typeof piexifjs:', typeof piexifjs);
+            
+            // Intentar diferentes formas de acceder a piexif
+            if (typeof piexif !== 'undefined') {
+                window.piexif = piexif;
+                console.log('✅ piexif encontrado y asignado a window.piexif');
+            } else if (typeof window.piexifjs !== 'undefined') {
+                window.piexif = window.piexifjs;
+                console.log('✅ piexif asignado desde window.piexifjs');
+            } else {
+                console.error('❌ piexif NO se cargó correctamente');
+            }
+        });
+    </script>
 </head>
 <body>
 <div class="top-bar">

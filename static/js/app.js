@@ -752,25 +752,419 @@ function captureQRImage() {
     }
 }
 
-// Capturar foto - FUNCIÓN PRINCIPAL
-function capturePhoto() {
+// Función para detectar la orientación del dispositivo
+function detectDeviceOrientation() {
+    let orientation = 1; // Por defecto, normal
+    
+    try {
+        let detectedAngle = null;
+        let detectionMethod = 'none';
+        
+        // DEBUG: Mostrar información de orientación disponible
+        console.log('🔍 DEBUG Orientación - screen.orientation:', screen.orientation);
+        console.log('🔍 DEBUG Orientación - window.orientation:', window.orientation);
+        console.log('🔍 DEBUG Orientación - innerWidth x innerHeight:', window.innerWidth, 'x', window.innerHeight);
+        
+        // Método 1: Screen Orientation API (más moderno y preciso)
+        if (screen.orientation && screen.orientation.angle !== undefined) {
+            detectedAngle = screen.orientation.angle;
+            detectionMethod = 'Screen Orientation API';
+            console.log('📱 Orientación detectada (Screen API):', detectedAngle, '°');
+        }
+        // Método 2: window.orientation (legacy, para móviles)
+        else if (window.orientation !== undefined && window.orientation !== null) {
+            detectedAngle = window.orientation;
+            detectionMethod = 'window.orientation';
+            console.log('📱 Orientación detectada (window.orientation):', detectedAngle, '°');
+        }
+        // Método alternativo: Usar dimensiones de la ventana
+        else {
+            const isPortraitWindow = window.innerHeight > window.innerWidth;
+            if (isPortraitWindow) {
+                detectedAngle = 90; // Asumir portrait = 90°
+                detectionMethod = 'Window dimensions';
+                console.log('📱 Orientación detectada por dimensiones de ventana: Portrait -> 90°');
+            } else {
+                detectedAngle = 0; // Asumir landscape = 0°
+                detectionMethod = 'Window dimensions';
+                console.log('📱 Orientación detectada por dimensiones de ventana: Landscape -> 0°');
+            }
+        }
+        
+        // Mapear ángulo detectado a orientación EXIF
+        if (detectedAngle !== null) {
+            // Normalizar ángulo a rango 0-360
+            let normalizedAngle = detectedAngle;
+            while (normalizedAngle < 0) normalizedAngle += 360;
+            normalizedAngle = normalizedAngle % 360;
+            
+            // EXIF Orientation values:
+            // 1 = Normal (0°) - Landscape
+            // 3 = Rotated 180°
+            // 6 = Rotated 90° clockwise (portrait, desde landscape)
+            // 8 = Rotated 90° counter-clockwise
+            
+            if (normalizedAngle === 0 || normalizedAngle === 360) {
+                orientation = 1; // Normal (landscape)
+            } else if (normalizedAngle === 90) {
+                orientation = 6; // Rotada 90° en sentido horario (portrait)
+            } else if (normalizedAngle === 180) {
+                orientation = 3; // Rotada 180°
+            } else if (normalizedAngle === 270) {
+                orientation = 8; // Rotada 90° en sentido antihorario
+            }
+            
+            console.log(`✅ Orientación EXIF calculada (${detectionMethod}): ${orientation} (ángulo normalizado: ${normalizedAngle}°)`);
+        } else {
+            // Método 3: Detectar por dimensiones del video como fallback
+            if (elements.photoVideo && elements.photoVideo.videoWidth && elements.photoVideo.videoHeight) {
+                const isLandscape = elements.photoVideo.videoWidth > elements.photoVideo.videoHeight;
+                const isPortrait = elements.photoVideo.videoHeight > elements.photoVideo.videoWidth;
+                
+                if (isPortrait) {
+                    orientation = 6; // Si es portrait, probablemente necesita rotación
+                    console.log('📱 Orientación detectada por dimensiones de video: Portrait -> 6');
+                } else {
+                    orientation = 1; // Landscape normal
+                    console.log('📱 Orientación detectada por dimensiones de video: Landscape -> 1');
+                }
+            } else {
+                console.log('⚠️ No se pudo detectar orientación, usando valor por defecto: 1');
+            }
+        }
+        
+        console.log('🎯 ORIENTACIÓN FINAL DETECTADA:', orientation);
+        return orientation;
+        
+    } catch (error) {
+        console.error('Error al detectar orientación:', error);
+        return 1; // Por defecto, normal
+    }
+}
+
+// Función para añadir metadatos EXIF básicos a una imagen
+async function addBasicEXIFToImage(imageDataUrl, orientationOverride = null) {
+    try {
+        // Verificar que piexif esté disponible (puede estar en diferentes lugares según la versión)
+        let piexifLib = null;
+        
+        // Esperar un momento para que la librería se cargue si aún no está disponible
+        if (typeof piexif === 'undefined' && typeof window.piexif === 'undefined' && typeof piexifjs === 'undefined') {
+            console.warn('⚠️ piexif no disponible inmediatamente, esperando hasta 1 segundo...');
+            // Intentar acceder después de delays progresivos
+            for (let i = 0; i < 5; i++) {
+                await new Promise(resolve => setTimeout(resolve, 200));
+                if (typeof piexif !== 'undefined' || typeof window.piexif !== 'undefined' || typeof piexifjs !== 'undefined') {
+                    console.log(`✅ piexif disponible después de ${(i + 1) * 200}ms`);
+                    break;
+                }
+            }
+        }
+        
+        // Intentar diferentes formas de acceder a piexif
+        if (typeof piexif !== 'undefined') {
+            piexifLib = piexif;
+            console.log('✅ piexif encontrado como variable global');
+        } else if (typeof window.piexif !== 'undefined') {
+            piexifLib = window.piexif;
+            console.log('✅ piexif encontrado en window.piexif');
+        } else if (typeof piexifjs !== 'undefined') {
+            piexifLib = piexifjs;
+            console.log('✅ piexif encontrado como piexifjs');
+        } else {
+            console.error('❌ piexif no está disponible después de esperar. Verificando carga de librería...');
+            console.error('   typeof piexif:', typeof piexif);
+            console.error('   typeof window.piexif:', typeof window.piexif);
+            console.error('   typeof piexifjs:', typeof piexifjs);
+            const piexifKeys = Object.keys(window).filter(k => k.toLowerCase().includes('piexif') || k.toLowerCase().includes('exif'));
+            console.error('   window keys con piexif/exif:', piexifKeys);
+            
+            // Intentar cargar dinámicamente como último recurso
+            console.warn('⚠️ Intentando cargar piexif dinámicamente como último recurso...');
+            try {
+                const script = document.createElement('script');
+                script.src = 'https://unpkg.com/piexifjs@1.3.0/piexif.js';
+                await new Promise((resolve, reject) => {
+                    script.onload = () => {
+                        console.log('✅ piexif cargado dinámicamente');
+                        if (typeof piexif !== 'undefined') {
+                            window.piexif = piexif;
+                            piexifLib = piexif;
+                            resolve();
+                        } else {
+                            reject(new Error('piexif no disponible después de cargar'));
+                        }
+                    };
+                    script.onerror = () => {
+                        console.error('❌ Error al cargar piexif dinámicamente');
+                        reject(new Error('Error cargando script'));
+                    };
+                    document.head.appendChild(script);
+                    // Timeout después de 3 segundos
+                    setTimeout(() => reject(new Error('Timeout cargando piexif')), 3000);
+                });
+            } catch (loadError) {
+                console.error('❌ No se pudo cargar piexif dinámicamente:', loadError);
+                console.warn('⚠️ piexif no disponible, no se pueden añadir metadatos EXIF');
+                console.warn('   La foto se guardará sin EXIF añadido (pero puede tener EXIF nativo)');
+                return imageDataUrl;
+            }
+        }
+        
+        if (!piexifLib) {
+            console.error('❌ No se pudo encontrar piexif después de todos los intentos');
+            return imageDataUrl;
+        }
+        
+        // Convertir data URL a binario (string)
+        const base64Data = imageDataUrl.split(',')[1] || imageDataUrl;
+        const binaryString = atob(base64Data);
+        
+        // Crear objeto EXIF básico
+        const now = new Date();
+        const dateTime = now.toISOString().replace(/T/, ' ').substring(0, 19).replace(/-/g, ':');
+        const dateTimeOriginal = dateTime;
+        const dateTimeDigitized = dateTime;
+        
+        const zeroth = {};
+        const exif = {};
+        const gps = {};
+        
+        // Información básica
+        zeroth[piexifLib.ImageIFD.Make] = 'Web Camera';
+        zeroth[piexifLib.ImageIFD.Model] = navigator.userAgent.match(/(iPhone|iPad|Android)/) ? 'Mobile Device' : 'Web Browser';
+        zeroth[piexifLib.ImageIFD.DateTime] = dateTime;
+        zeroth[piexifLib.ImageIFD.Software] = 'Incidencias Malla Web App';
+        
+        // EXIF
+        exif[piexifLib.ExifIFD.DateTimeOriginal] = dateTimeOriginal;
+        exif[piexifLib.ExifIFD.DateTimeDigitized] = dateTimeDigitized;
+        exif[piexifLib.ExifIFD.PixelXDimension] = elements.photoVideo.videoWidth;
+        exif[piexifLib.ExifIFD.PixelYDimension] = elements.photoVideo.videoHeight;
+        
+        // Detectar orientación del dispositivo
+        const detectedOrientation = orientationOverride !== null ? orientationOverride : detectDeviceOrientation();
+        
+        // La orientación debe estar tanto en ImageIFD (0th) como en ExifIFD según el estándar
+        zeroth[piexifLib.ImageIFD.Orientation] = detectedOrientation;
+        exif[piexifLib.ExifIFD.Orientation] = detectedOrientation;
+        console.log('📐 Orientación EXIF establecida:', detectedOrientation);
+        
+        const exifObj = {
+            '0th': zeroth,
+            'Exif': exif,
+            'GPS': gps
+        };
+        
+        // Convertir EXIF a string binario
+        const exifString = piexifLib.dump(exifObj);
+        
+        // Insertar EXIF en la imagen (piexif.insert devuelve un string binario)
+        const newBinaryString = piexifLib.insert(exifString, binaryString);
+        
+        // Convertir de nuevo a base64
+        const newBase64 = btoa(newBinaryString);
+        
+        return 'data:image/jpeg;base64,' + newBase64;
+        
+    } catch (error) {
+        console.error('Error al añadir EXIF:', error);
+        return imageDataUrl; // Devolver original si hay error
+    }
+}
+
+// Capturar foto - FUNCIÓN PRINCIPAL (ahora con soporte para ImageCapture API y EXIF)
+async function capturePhoto() {
     try {
         console.log('Capturando foto...'); // Debug
         
-        if (!elements.photoVideo.videoWidth || !elements.photoVideo.videoHeight) {
-            showStatus('La cámara no está lista. Espera un momento.', 'error');
-            return;
+        let imageData;
+        let hasEXIF = false;
+        
+        // Intentar usar ImageCapture API si está disponible (mejor calidad y posiblemente EXIF)
+        if (photoStream && photoStream.getVideoTracks().length > 0 && typeof ImageCapture !== 'undefined') {
+            try {
+                console.log('📸 Intentando capturar con ImageCapture API...');
+                const videoTrack = photoStream.getVideoTracks()[0];
+                const imageCapture = new ImageCapture(videoTrack);
+                
+                // Intentar capturar como JPEG (mejor soporte EXIF)
+                let blob;
+                try {
+                    // ImageCapture puede capturar con opciones
+                    blob = await imageCapture.takePhoto({
+                        imageWidth: elements.photoVideo.videoWidth,
+                        imageHeight: elements.photoVideo.videoHeight,
+                        fillLightMode: 'auto',
+                        redEyeReduction: false
+                    });
+                    console.log('✅ Foto capturada con ImageCapture API');
+                    console.log('📸 Tipo de blob:', blob.type, 'Tamaño:', blob.size, 'bytes');
+                } catch (error) {
+                    console.log('⚠️ Error con opciones, capturando sin opciones:', error);
+                    blob = await imageCapture.takePhoto();
+                }
+                
+                // Si el blob es PNG, convertirlo a JPEG para mejor soporte EXIF
+                if (blob.type === 'image/png' || blob.type === '') {
+                    console.log('🔄 Convirtiendo PNG a JPEG para soporte EXIF...');
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    const img = new Image();
+                    
+                    const imageUrl = URL.createObjectURL(blob);
+                    blob = await new Promise((resolve, reject) => {
+                        img.onload = () => {
+                            canvas.width = img.width;
+                            canvas.height = img.height;
+                            ctx.drawImage(img, 0, 0);
+                            canvas.toBlob((jpegBlob) => {
+                                URL.revokeObjectURL(imageUrl);
+                                if (jpegBlob) {
+                                    resolve(jpegBlob);
+                                } else {
+                                    reject(new Error('Error al convertir a JPEG'));
+                                }
+                            }, 'image/jpeg', 0.9);
+                        };
+                        img.onerror = reject;
+                        img.src = imageUrl;
+                    });
+                    console.log('✅ Convertido a JPEG:', blob.type, 'Tamaño:', blob.size, 'bytes');
+                }
+                
+                // Convertir blob a data URL
+                const reader = new FileReader();
+                imageData = await new Promise((resolve, reject) => {
+                    reader.onloadend = () => resolve(reader.result);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(blob);
+                });
+                
+                // Verificar que la imagen sea JPEG antes de añadir EXIF
+                if (!imageData.startsWith('data:image/jpeg')) {
+                    console.log('🔄 La imagen no es JPEG, convirtiendo...');
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+                    const img = new Image();
+                    
+                    imageData = await new Promise((resolve, reject) => {
+                        img.onload = () => {
+                            canvas.width = img.width;
+                            canvas.height = img.height;
+                            ctx.drawImage(img, 0, 0);
+                            resolve(canvas.toDataURL('image/jpeg', 0.9));
+                        };
+                        img.onerror = reject;
+                        img.src = imageData;
+                    });
+                    console.log('✅ Convertido a JPEG');
+                }
+                
+                // Intentar leer EXIF de la foto capturada
+                try {
+                    await new Promise((resolve) => {
+                        // Crear un nuevo blob desde el imageData para leer EXIF
+                        const base64Data = imageData.split(',')[1];
+                        const byteString = atob(base64Data);
+                        const mimeString = 'image/jpeg';
+                        const ab = new ArrayBuffer(byteString.length);
+                        const ia = new Uint8Array(ab);
+                        for (let i = 0; i < byteString.length; i++) {
+                            ia[i] = byteString.charCodeAt(i);
+                        }
+                        const blobForEXIF = new Blob([ab], { type: mimeString });
+                        const fileForEXIF = new File([blobForEXIF], 'photo.jpg', { type: mimeString });
+                        
+                        readEXIFFromFile(fileForEXIF, (exifData) => {
+                            if (exifData && exifData.Orientation) {
+                                hasEXIF = true;
+                                console.log('✅ EXIF nativo encontrado en foto capturada:', exifData);
+                                setTimeout(() => {
+                                    showEXIFAlert(exifData);
+                                }, 500);
+                                resolve();
+                            } else {
+                                // Si no tiene EXIF nativo o no tiene orientación, añadirlo
+                                console.log('📝 Añadiendo EXIF con orientación a foto de ImageCapture...');
+                                const detectedOrientation = detectDeviceOrientation();
+                                addBasicEXIFToImage(imageData, detectedOrientation).then((newImageData) => {
+                                    imageData = newImageData;
+                                    hasEXIF = true;
+                                    setTimeout(() => {
+                                        readEXIFFromBase64(imageData, (exifData) => {
+                                            if (exifData) {
+                                                showEXIFAlert({
+                                                    ...exifData,
+                                                    _note: `EXIF añadido. Orientación detectada: ${detectedOrientation}`
+                                                });
+                                            }
+                                        });
+                                    }, 500);
+                                    resolve();
+                                }).catch((error) => {
+                                    console.error('Error al añadir EXIF:', error);
+                                    resolve(); // Continuar aunque falle
+                                });
+                            }
+                        });
+                    });
+                } catch (exifError) {
+                    console.log('⚠️ No se pudo leer EXIF de la foto capturada, añadiendo EXIF básico:', exifError);
+                    // Añadir EXIF básico si no se pudo leer
+                    const detectedOrientation = detectDeviceOrientation();
+                    imageData = await addBasicEXIFToImage(imageData, detectedOrientation);
+                    hasEXIF = true;
+                }
+                
+            } catch (imageCaptureError) {
+                console.log('⚠️ ImageCapture API no disponible o falló, usando método alternativo:', imageCaptureError);
+                // Continuar con el método alternativo
+            }
         }
         
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        
-        canvas.width = elements.photoVideo.videoWidth;
-        canvas.height = elements.photoVideo.videoHeight;
-        
-        context.drawImage(elements.photoVideo, 0, 0);
-        
-        const imageData = canvas.toDataURL('image/jpeg', 0.9);
+        // Método alternativo: capturar desde canvas (si ImageCapture no funcionó)
+        if (!imageData) {
+            if (!elements.photoVideo.videoWidth || !elements.photoVideo.videoHeight) {
+                showStatus('La cámara no está lista. Espera un momento.', 'error');
+                return;
+            }
+            
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            
+            canvas.width = elements.photoVideo.videoWidth;
+            canvas.height = elements.photoVideo.videoHeight;
+            
+            context.drawImage(elements.photoVideo, 0, 0);
+            
+            imageData = canvas.toDataURL('image/jpeg', 0.9);
+            
+            // Detectar orientación antes de añadir EXIF
+            console.log('🔍 DEBUG: Detectando orientación en el momento de captura...');
+            console.log('🔍 DEBUG: videoWidth x videoHeight:', elements.photoVideo.videoWidth, 'x', elements.photoVideo.videoHeight);
+            const detectedOrientation = detectDeviceOrientation();
+            console.log('📐 Orientación detectada para EXIF:', detectedOrientation);
+            
+            // Añadir metadatos EXIF básicos manualmente con orientación correcta
+            console.log('📝 Añadiendo metadatos EXIF básicos con orientación:', detectedOrientation);
+            imageData = await addBasicEXIFToImage(imageData, detectedOrientation);
+            hasEXIF = true; // Ahora tiene EXIF básico
+            
+            // Leer EXIF añadido para mostrarlo
+            setTimeout(() => {
+                readEXIFFromBase64(imageData, (exifData) => {
+                    if (exifData) {
+                        console.log('✅ EXIF básico añadido:', exifData);
+                        console.log('🔍 DEBUG: Orientación en EXIF leído:', exifData.Orientation);
+                        showEXIFAlert({
+                            ...exifData,
+                            _note: `EXIF básico añadido manualmente. Orientación detectada: ${detectedOrientation}`
+                        });
+                    }
+                });
+            }, 500);
+        }
         
         // Verificar el modo: 'reportar' o 'añadir'
         if (photoMode === 'reportar') {
@@ -952,6 +1346,25 @@ function handlePhotoImport(event) {
         
         files.forEach((file, index) => {
             const reader = new FileReader();
+            
+            // AVISO PROVISIONAL: Leer EXIF del archivo original antes de procesarlo
+            if (index === 0) { // Solo mostrar EXIF de la primera foto para no saturar
+                readEXIFFromFile(file, (exifData) => {
+                    if (exifData) {
+                        console.log('🔍 DEBUG: EXIF de foto importada:', exifData);
+                        console.log('🔍 DEBUG: Orientación en foto importada:', exifData.Orientation);
+                        // Mostrar nota de que es EXIF original de la foto, no detectado
+                        showEXIFAlert({
+                            ...exifData,
+                            _note: `EXIF original de la foto importada (no detectado del dispositivo). Orientación: ${exifData.Orientation || 'N/A'}`
+                        });
+                    } else {
+                        setTimeout(() => {
+                            alert('⚠️ AVISO PROVISIONAL: No se encontró información EXIF en la foto importada.\n\nEsto puede deberse a que:\n- La foto fue procesada y perdió los metadatos\n- El archivo no contiene información EXIF\n- El formato de archivo no soporta EXIF');
+                        }, 500);
+                    }
+                });
+            }
             
             reader.onload = function(e) {
                 const imageData = e.target.result;
@@ -4518,6 +4931,156 @@ function showStatus(message, type = 'info') {
     setTimeout(() => {
         statusElement.style.display = 'none';
     }, 5000);
+}
+
+// Función para añadir mensaje a la consola de debug en pantalla
+function addDebugToScreen(message, type = 'log') {
+    if (window.addDebugMessage) {
+        window.addDebugMessage(type.toUpperCase(), message);
+    }
+}
+
+// Función para leer EXIF de una imagen (archivo o base64)
+function readEXIFFromFile(file, callback) {
+    if (typeof EXIF === 'undefined') {
+        console.warn('⚠️ Librería EXIF no disponible');
+        callback(null);
+        return;
+    }
+    
+    EXIF.getData(file, function() {
+        try {
+            const exifData = {};
+            
+            // Información básica
+            const make = EXIF.getTag(this, 'Make');
+            const model = EXIF.getTag(this, 'Model');
+            const orientation = EXIF.getTag(this, 'Orientation');
+            const dateTime = EXIF.getTag(this, 'DateTime');
+            const dateTimeOriginal = EXIF.getTag(this, 'DateTimeOriginal');
+            
+            // Información de la cámara
+            if (make) exifData.Make = make;
+            if (model) exifData.Model = model;
+            if (orientation) exifData.Orientation = orientation;
+            if (dateTime) exifData.DateTime = dateTime;
+            if (dateTimeOriginal) exifData.DateTimeOriginal = dateTimeOriginal;
+            
+            // Configuración de la cámara
+            const fNumber = EXIF.getTag(this, 'FNumber');
+            const exposureTime = EXIF.getTag(this, 'ExposureTime');
+            const isoSpeedRatings = EXIF.getTag(this, 'ISOSpeedRatings');
+            const focalLength = EXIF.getTag(this, 'FocalLength');
+            
+            if (fNumber) exifData.FNumber = fNumber;
+            if (exposureTime) exifData.ExposureTime = exposureTime;
+            if (isoSpeedRatings) exifData.ISO = isoSpeedRatings;
+            if (focalLength) exifData.FocalLength = focalLength;
+            
+            // GPS
+            const gpsLatitude = EXIF.getTag(this, 'GPSLatitude');
+            const gpsLongitude = EXIF.getTag(this, 'GPSLongitude');
+            const gpsLatitudeRef = EXIF.getTag(this, 'GPSLatitudeRef');
+            const gpsLongitudeRef = EXIF.getTag(this, 'GPSLongitudeRef');
+            
+            if (gpsLatitude && gpsLongitude) {
+                let lat = gpsLatitude;
+                let lon = gpsLongitude;
+                
+                if (gpsLatitudeRef === 'S') lat = -lat;
+                if (gpsLongitudeRef === 'W') lon = -lon;
+                
+                exifData.GPS = {
+                    latitude: lat,
+                    longitude: lon
+                };
+            }
+            
+            // Dimensiones
+            const pixelXDimension = EXIF.getTag(this, 'PixelXDimension');
+            const pixelYDimension = EXIF.getTag(this, 'PixelYDimension');
+            
+            if (pixelXDimension) exifData.Width = pixelXDimension;
+            if (pixelYDimension) exifData.Height = pixelYDimension;
+            
+            callback(Object.keys(exifData).length > 0 ? exifData : null);
+        } catch (error) {
+            console.error('Error al leer EXIF:', error);
+            callback(null);
+        }
+    });
+}
+
+// Función para leer EXIF desde base64
+function readEXIFFromBase64(base64Data, callback) {
+    if (typeof EXIF === 'undefined') {
+        console.warn('⚠️ Librería EXIF no disponible');
+        callback(null);
+        return;
+    }
+    
+    // Convertir base64 a blob
+    const byteString = atob(base64Data.split(',')[1] || base64Data);
+    const mimeString = base64Data.split(',')[0].match(/:(.*?);/)[1];
+    const ab = new ArrayBuffer(byteString.length);
+    const ia = new Uint8Array(ab);
+    for (let i = 0; i < byteString.length; i++) {
+        ia[i] = byteString.charCodeAt(i);
+    }
+    const blob = new Blob([ab], { type: mimeString });
+    
+    // Crear un objeto File-like para EXIF.js
+    const file = new File([blob], 'photo.jpg', { type: mimeString });
+    readEXIFFromFile(file, callback);
+}
+
+// Función para mostrar aviso con información EXIF
+function showEXIFAlert(exifData) {
+    if (!exifData || Object.keys(exifData).length === 0) {
+        alert('⚠️ AVISO PROVISIONAL: No se encontró información EXIF en la foto.\n\nEsto puede deberse a que:\n- La foto fue procesada y perdió los metadatos\n- El archivo no contiene información EXIF');
+        return;
+    }
+    
+    let exifText = '📸 AVISO PROVISIONAL - Información EXIF de la foto:\n\n';
+    
+    // Nota especial si el EXIF fue añadido manualmente
+    if (exifData._note) {
+        exifText += `ℹ️ ${exifData._note}\n\n`;
+    }
+    
+    if (exifData.Make || exifData.Model) {
+        exifText += `📷 Cámara: ${exifData.Make || ''} ${exifData.Model || ''}\n`;
+    }
+    
+    if (exifData.DateTime || exifData.DateTimeOriginal) {
+        exifText += `📅 Fecha: ${exifData.DateTimeOriginal || exifData.DateTime || 'N/A'}\n`;
+    }
+    
+    if (exifData.Orientation) {
+        exifText += `🔄 Orientación: ${exifData.Orientation}\n`;
+    }
+    
+    if (exifData.FNumber || exifData.ExposureTime || exifData.ISO || exifData.FocalLength) {
+        exifText += `⚙️ Configuración:\n`;
+        if (exifData.FNumber) exifText += `   - Apertura: f/${exifData.FNumber}\n`;
+        if (exifData.ExposureTime) exifText += `   - Exposición: ${exifData.ExposureTime}s\n`;
+        if (exifData.ISO) exifText += `   - ISO: ${exifData.ISO}\n`;
+        if (exifData.FocalLength) exifText += `   - Distancia focal: ${exifData.FocalLength}mm\n`;
+    }
+    
+    if (exifData.GPS) {
+        exifText += `📍 GPS: ${exifData.GPS.latitude}, ${exifData.GPS.longitude}\n`;
+    }
+    
+    if (exifData.Width || exifData.Height || exifData.PixelXDimension || exifData.PixelYDimension) {
+        const width = exifData.Width || exifData.PixelXDimension || 'N/A';
+        const height = exifData.Height || exifData.PixelYDimension || 'N/A';
+        exifText += `📐 Dimensiones: ${width} x ${height}\n`;
+    }
+    
+    exifText += '\n⚠️ NOTA: Esta información EXIF NO se está grabando en el servidor.';
+    
+    alert(exifText);
 }
 
 // Función helper para obtener el tipo de incidencia por defecto

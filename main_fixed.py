@@ -16,7 +16,7 @@ from kivy.uix.gridlayout import GridLayout
 
 import cv2
 import numpy as np
-from PIL import Image as PILImage
+from PIL import Image as PILImage, ImageOps
 import base64
 import requests
 import json
@@ -693,12 +693,33 @@ class CameraPhotoScreen(Screen):
             # Convertir de RGB a BGR para OpenCV
             frame_bgr = cv2.cvtColor(self.current_frame, cv2.COLOR_RGB2BGR)
             
-            # Guardar con mejor calidad
+            # Guardar temporalmente con OpenCV
             cv2.imwrite(photo_path, frame_bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
             
             # Verificar que se guardó correctamente
             if not os.path.exists(photo_path):
                 raise Exception("No se pudo guardar la imagen")
+            
+            # Aplicar corrección EXIF usando PIL
+            # Esto asegura que la orientación sea correcta incluso si la imagen tiene metadatos EXIF
+            try:
+                # Leer imagen con PIL
+                image = PILImage.open(photo_path)
+                
+                # Aplicar orientación EXIF automáticamente
+                # Esto corrige la rotación según los metadatos EXIF si existen
+                image = ImageOps.exif_transpose(image)
+                
+                # Convertir a RGB si es necesario
+                if image.mode in ('RGBA', 'LA', 'P'):
+                    image = image.convert('RGB')
+                
+                # Guardar de nuevo sin información EXIF de orientación (ya aplicada en los píxeles)
+                image.save(photo_path, format='JPEG', quality=95, optimize=True, exif=b'')
+                print(f"🔄 Orientación EXIF aplicada en captura")
+            except Exception as e:
+                print(f"⚠️ No se pudo aplicar orientación EXIF en captura (puede que no tenga): {str(e)}")
+                # Continuar sin aplicar orientación si no hay EXIF o hay error
             
             # Convertir a base64
             with open(photo_path, 'rb') as image_file:
