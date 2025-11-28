@@ -158,7 +158,12 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB max (aumentado para múltiples imágenes)
 
 def compress_image(image_bytes, quality=85, max_size_mb=10):
-    """Comprime la imagen si es muy grande y siempre aplica corrección EXIF"""
+    """Comprime la imagen si es muy grande y siempre aplica corrección EXIF.
+    
+    Devuelve:
+        processed_bytes (bytes): imagen procesada/comprimida
+        orientation_flag (str|None): 'H' para horizontal, 'V' para vertical, None si no se pudo determinar
+    """
     try:
         from PIL import Image, ImageOps
         import io
@@ -183,6 +188,15 @@ def compress_image(image_bytes, quality=85, max_size_mb=10):
         if image.mode in ('RGBA', 'LA', 'P'):
             image = image.convert('RGB')
         
+        # Determinar orientación final tras aplicar EXIF
+        try:
+            width, height = image.size
+            orientation_flag = 'H' if width >= height else 'V'
+            print(f"📐 Dimensiones tras EXIF: {width}x{height} → Orientación: {orientation_flag}")
+        except Exception as e:
+            print(f"⚠️ No se pudo determinar orientación de la imagen: {str(e)}")
+            orientation_flag = None
+        
         # Si la imagen es menor al tamaño máximo, solo aplicar EXIF y retornar
         if size_mb <= max_size_mb:
             print(f"✅ Imagen dentro del límite, solo se aplica EXIF")
@@ -190,7 +204,7 @@ def compress_image(image_bytes, quality=85, max_size_mb=10):
             # Guardar sin información EXIF de orientación (ya aplicada en los píxeles)
             image.save(output_buffer, format='JPEG', quality=quality, optimize=True, exif=b'')
             processed_bytes = output_buffer.getvalue()
-            return processed_bytes
+            return processed_bytes, orientation_flag
         
         # Comprimir imagen si es muy grande
         output_buffer = io.BytesIO()
@@ -205,12 +219,12 @@ def compress_image(image_bytes, quality=85, max_size_mb=10):
         print(f"🔄 Imagen comprimida: {size_mb:.2f} MB → {compressed_size_mb:.2f} MB")
         print(f"📉 Ratio de compresión: {compression_ratio:.1f}%")
         
-        return compressed_bytes
+        return compressed_bytes, orientation_flag
         
     except Exception as e:
         print(f"Error al comprimir imagen: {str(e)}")
         print(f"   Usando imagen original sin comprimir")
-        return image_bytes
+        return image_bytes, None
 
 def clean_and_validate_base64(image_data):
     """Limpia y valida el base64 de la imagen"""
@@ -401,9 +415,9 @@ def process_photo():
         else:
             print(f"⚠️ No se encontró información EXIF en la imagen")
         
-        # Comprimir imagen si es muy grande
+        # Comprimir imagen si es muy grande y obtener orientación
         from config import BC_CONFIG
-        compressed_image_bytes = compress_image(
+        compressed_image_bytes, orientation_flag = compress_image(
             image_bytes, 
             quality=BC_CONFIG['compress_quality'],
             max_size_mb=BC_CONFIG['max_image_size_mb']
@@ -412,7 +426,9 @@ def process_photo():
         # Guardar imagen temporalmente (comprimida si fue necesario)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         unique_id = str(uuid.uuid4())[:8]
-        filename = f"photo_{timestamp}_{unique_id}.jpg"
+        # Prefijar con H-/V- según orientación detectada para mayor seguridad
+        prefix = f"{orientation_flag}-" if orientation_flag in ('H', 'V') else ""
+        filename = f"{prefix}photo_{timestamp}_{unique_id}.jpg"
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         
         with open(filepath, 'wb') as f:
@@ -1381,20 +1397,21 @@ def process_photo_with_task():
         # Procesar imagen
         image_base64 = clean_and_validate_base64(image_data)
         
-        # Comprimir imagen si es necesario
+        # Comprimir imagen si es necesario y obtener orientación
         from config import BC_CONFIG
         image_bytes = base64.b64decode(image_base64)
-        compressed_image_bytes = compress_image(
+        compressed_image_bytes, orientation_flag = compress_image(
             image_bytes, 
             quality=BC_CONFIG['compress_quality'],
             max_size_mb=BC_CONFIG['max_image_size_mb']
         )
         image_base64 = base64.b64encode(compressed_image_bytes).decode('utf-8')
         
-        # Generar nombre de archivo
+        # Generar nombre de archivo con prefijo de orientación
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         unique_id = str(uuid.uuid4())[:8]
-        filename = f"photo_{timestamp}_{unique_id}.jpg"
+        prefix = f"{orientation_flag}-" if orientation_flag in ('H', 'V') else ""
+        filename = f"{prefix}photo_{timestamp}_{unique_id}.jpg"
         
         # Guardar imagen temporalmente
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)

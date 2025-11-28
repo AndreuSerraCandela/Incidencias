@@ -947,139 +947,30 @@ function detectDeviceOrientation() {
     }
 }
 
-// Función para añadir metadatos EXIF básicos a una imagen
-async function addBasicEXIFToImage(imageDataUrl, orientationOverride = null) {
-    try {
-        // Verificar que piexif esté disponible (puede estar en diferentes lugares según la versión)
-        let piexifLib = null;
-        
-        // Esperar un momento para que la librería se cargue si aún no está disponible
-        if (typeof piexif === 'undefined' && typeof window.piexif === 'undefined' && typeof piexifjs === 'undefined') {
-            console.warn('⚠️ piexif no disponible inmediatamente, esperando hasta 1 segundo...');
-            // Intentar acceder después de delays progresivos
-            for (let i = 0; i < 5; i++) {
-                await new Promise(resolve => setTimeout(resolve, 200));
-                if (typeof piexif !== 'undefined' || typeof window.piexif !== 'undefined' || typeof piexifjs !== 'undefined') {
-                    console.log(`✅ piexif disponible después de ${(i + 1) * 200}ms`);
-                    break;
-                }
-            }
-        }
-        
-        // Intentar diferentes formas de acceder a piexif
-        if (typeof piexif !== 'undefined') {
-            piexifLib = piexif;
-            console.log('✅ piexif encontrado como variable global');
-        } else if (typeof window.piexif !== 'undefined') {
-            piexifLib = window.piexif;
-            console.log('✅ piexif encontrado en window.piexif');
-        } else if (typeof piexifjs !== 'undefined') {
-            piexifLib = piexifjs;
-            console.log('✅ piexif encontrado como piexifjs');
-        } else {
-            console.error('❌ piexif no está disponible después de esperar. Verificando carga de librería...');
-            console.error('   typeof piexif:', typeof piexif);
-            console.error('   typeof window.piexif:', typeof window.piexif);
-            console.error('   typeof piexifjs:', typeof piexifjs);
-            const piexifKeys = Object.keys(window).filter(k => k.toLowerCase().includes('piexif') || k.toLowerCase().includes('exif'));
-            console.error('   window keys con piexif/exif:', piexifKeys);
-            
-            // Intentar cargar dinámicamente como último recurso
-            console.warn('⚠️ Intentando cargar piexif dinámicamente como último recurso...');
-            try {
-                const script = document.createElement('script');
-                script.src = 'https://unpkg.com/piexifjs@1.3.0/piexif.js';
-                await new Promise((resolve, reject) => {
-                    script.onload = () => {
-                        console.log('✅ piexif cargado dinámicamente');
-                        if (typeof piexif !== 'undefined') {
-                            window.piexif = piexif;
-                            piexifLib = piexif;
-                            resolve();
-                        } else {
-                            reject(new Error('piexif no disponible después de cargar'));
-                        }
-                    };
-                    script.onerror = () => {
-                        console.error('❌ Error al cargar piexif dinámicamente');
-                        reject(new Error('Error cargando script'));
-                    };
-                    document.head.appendChild(script);
-                    // Timeout después de 3 segundos
-                    setTimeout(() => reject(new Error('Timeout cargando piexif')), 3000);
-                });
-            } catch (loadError) {
-                console.error('❌ No se pudo cargar piexif dinámicamente:', loadError);
-                console.warn('⚠️ piexif no disponible, no se pueden añadir metadatos EXIF');
-                console.warn('   La foto se guardará sin EXIF añadido (pero puede tener EXIF nativo)');
-                return imageDataUrl;
-            }
-        }
-        
-        if (!piexifLib) {
-            console.error('❌ No se pudo encontrar piexif después de todos los intentos');
-            return imageDataUrl;
-        }
-        
-        // Convertir data URL a binario (string)
-        const base64Data = imageDataUrl.split(',')[1] || imageDataUrl;
-        const binaryString = atob(base64Data);
-        
-        // Crear objeto EXIF básico
-        const now = new Date();
-        const dateTime = now.toISOString().replace(/T/, ' ').substring(0, 19).replace(/-/g, ':');
-        const dateTimeOriginal = dateTime;
-        const dateTimeDigitized = dateTime;
-        
-        const zeroth = {};
-        const exif = {};
-        const gps = {};
-        
-        // Información básica
-        zeroth[piexifLib.ImageIFD.Make] = 'Web Camera';
-        zeroth[piexifLib.ImageIFD.Model] = navigator.userAgent.match(/(iPhone|iPad|Android)/) ? 'Mobile Device' : 'Web Browser';
-        zeroth[piexifLib.ImageIFD.DateTime] = dateTime;
-        zeroth[piexifLib.ImageIFD.Software] = 'Incidencias Malla Web App';
-        
-        // EXIF
-        exif[piexifLib.ExifIFD.DateTimeOriginal] = dateTimeOriginal;
-        exif[piexifLib.ExifIFD.DateTimeDigitized] = dateTimeDigitized;
-        exif[piexifLib.ExifIFD.PixelXDimension] = elements.photoVideo.videoWidth;
-        exif[piexifLib.ExifIFD.PixelYDimension] = elements.photoVideo.videoHeight;
-        
-        // Detectar orientación del dispositivo
-        const detectedOrientation = orientationOverride !== null ? orientationOverride : detectDeviceOrientation();
-        
-        // La orientación debe estar tanto en ImageIFD (0th) como en ExifIFD según el estándar
-        zeroth[piexifLib.ImageIFD.Orientation] = detectedOrientation;
-        exif[piexifLib.ExifIFD.Orientation] = detectedOrientation;
-        console.log('📐 Orientación EXIF establecida en metadatos:', detectedOrientation, detectedOrientation === 1 ? '(LANDSCAPE/HORIZONTAL)' : '(PORTRAIT/VERTICAL)');
-        console.log('   Esta orientación se guardará en el EXIF de la foto para que pueda leerse después');
-        
-        const exifObj = {
-            '0th': zeroth,
-            'Exif': exif,
-            'GPS': gps
-        };
-        
-        // Convertir EXIF a string binario
-        const exifString = piexifLib.dump(exifObj);
-        
-        // Insertar EXIF en la imagen (piexif.insert devuelve un string binario)
-        const newBinaryString = piexifLib.insert(exifString, binaryString);
-        
-        // Convertir de nuevo a base64
-        const newBase64 = btoa(newBinaryString);
-        
-        console.log('✅ EXIF añadido a la imagen con orientación:', detectedOrientation, detectedOrientation === 1 ? '(LANDSCAPE/HORIZONTAL)' : '(PORTRAIT/VERTICAL)');
-        console.log('   La foto ahora contiene metadatos EXIF que pueden leerse para determinar la orientación');
-        
-        return 'data:image/jpeg;base64,' + newBase64;
-        
-    } catch (error) {
-        console.error('Error al añadir EXIF:', error);
-        return imageDataUrl; // Devolver original si hay error
+// Obtener prefijo de nombre de archivo según la orientación actual/capturada
+function getOrientationFilenamePrefix() {
+    // Priorizar la orientación capturada en el momento de pulsar el botón de cámara
+    let orientation = capturedOrientation;
+    if (orientation === null || orientation === undefined) {
+        orientation = currentDeviceOrientation;
     }
+    
+    // 1 = horizontal, 6 = vertical (según EXIF estándar que ya usamos)
+    if (orientation === 6) {
+        return 'V_'; // Vertical
+    }
+    if (orientation === 1) {
+        return 'H_'; // Horizontal
+    }
+    // Si no sabemos la orientación, no añadimos prefijo
+    return '';
+}
+
+// Función para añadir metadatos EXIF básicos a una imagen
+// AVISO: piexif se ha eliminado; esta función ahora solo devuelve la imagen original.
+async function addBasicEXIFToImage(imageDataUrl, orientationOverride = null) {
+    console.log('ℹ️ addBasicEXIFToImage() llamado pero piexif está deshabilitado; se devuelve la imagen sin modificar.');
+    return imageDataUrl;
 }
 
 // Capturar foto - FUNCIÓN PRINCIPAL (ahora con soporte para ImageCapture API y EXIF)
@@ -1097,21 +988,28 @@ async function capturePhoto() {
                 const videoTrack = photoStream.getVideoTracks()[0];
                 const imageCapture = new ImageCapture(videoTrack);
                 
-                // Intentar capturar como JPEG (mejor soporte EXIF)
+                // Intentar capturar como JPEG a resolución máxima disponible del sensor
+                // IMPORTANTE: NO forzar imageWidth/imageHeight para no limitar la resolución
                 let blob;
                 try {
-                    // ImageCapture puede capturar con opciones
-                    blob = await imageCapture.takePhoto({
-                        imageWidth: elements.photoVideo.videoWidth,
-                        imageHeight: elements.photoVideo.videoHeight,
-                        fillLightMode: 'auto',
-                        redEyeReduction: false
-                    });
-                    console.log('✅ Foto capturada con ImageCapture API');
+                    blob = await imageCapture.takePhoto();
+                    console.log('✅ Foto capturada con ImageCapture API (sin restricciones de tamaño)');
                     console.log('📸 Tipo de blob:', blob.type, 'Tamaño:', blob.size, 'bytes');
                 } catch (error) {
-                    console.log('⚠️ Error con opciones, capturando sin opciones:', error);
-                    blob = await imageCapture.takePhoto();
+                    console.log('⚠️ Error al capturar foto con ImageCapture():', error);
+                    // Como último recurso, intentar con opciones basadas en el vídeo
+                    try {
+                        blob = await imageCapture.takePhoto({
+                            imageWidth: elements.photoVideo.videoWidth,
+                            imageHeight: elements.photoVideo.videoHeight,
+                            fillLightMode: 'auto',
+                            redEyeReduction: false
+                        });
+                        console.log('✅ Foto capturada con ImageCapture API usando dimensiones del vídeo');
+                    } catch (errorOptions) {
+                        console.log('❌ Falló también la captura con opciones:', errorOptions);
+                        throw errorOptions;
+                    }
                 }
                 
                 // Si el blob es PNG, convertirlo a JPEG para mejor soporte EXIF
@@ -1289,11 +1187,12 @@ async function capturePhoto() {
             currentPhotoData = imageData; // Mantener para compatibilidad
             
             // Normalizar imagenia a objeto si es necesario
+            const orientationPrefix = getOrientationFilenamePrefix();
             const imageniaObj = typeof imageData === 'string' ? {
                 base64: imageData,
                 url: null,
                 file_id: null,
-                filename: `main_photo_${Date.now()}.jpg`,
+                filename: `${orientationPrefix}main_photo_${Date.now()}.jpg`,
                 converted: false
             } : imageData;
             
@@ -1353,11 +1252,12 @@ async function capturePhoto() {
             currentPhotoData = imageData;
             
             // Normalizar a objeto
+            const orientationPrefix = getOrientationFilenamePrefix();
             const imageniaObj = typeof imageData === 'string' ? {
                 base64: imageData,
                 url: null,
                 file_id: null,
-                filename: `main_photo_${Date.now()}.jpg`,
+                filename: `${orientationPrefix}main_photo_${Date.now()}.jpg`,
                 converted: false
             } : imageData;
             
@@ -1463,24 +1363,7 @@ function handlePhotoImport(event) {
         files.forEach((file, index) => {
             const reader = new FileReader();
             
-            // AVISO PROVISIONAL: Leer EXIF del archivo original antes de procesarlo
-            if (index === 0) { // Solo mostrar EXIF de la primera foto para no saturar
-                readEXIFFromFile(file, (exifData) => {
-                    if (exifData) {
-                        console.log('🔍 DEBUG: EXIF de foto importada:', exifData);
-                        console.log('🔍 DEBUG: Orientación en foto importada:', exifData.Orientation);
-                        // Mostrar nota de que es EXIF original de la foto, no detectado
-                        showEXIFAlert({
-                            ...exifData,
-                            _note: `EXIF original de la foto importada (no detectado del dispositivo). Orientación: ${exifData.Orientation || 'N/A'}`
-                        });
-                    } else {
-                        setTimeout(() => {
-                            alert('⚠️ AVISO PROVISIONAL: No se encontró información EXIF en la foto importada.\n\nEsto puede deberse a que:\n- La foto fue procesada y perdió los metadatos\n- El archivo no contiene información EXIF\n- El formato de archivo no soporta EXIF');
-                        }, 500);
-                    }
-                });
-            }
+            // Aviso provisional de EXIF eliminado: ya no mostramos EXIF ni alertas al importar
             
             reader.onload = function(e) {
                 const imageData = e.target.result;
@@ -1520,11 +1403,12 @@ function handlePhotoImport(event) {
                         console.log('📸 Imagenia importada desde Reportar Incidencia');
                         
                         // Normalizar imagenia a objeto si es necesario
+                        const orientationPrefix = getOrientationFilenamePrefix();
                         const imageniaObj = typeof imagenia === 'string' ? {
                             base64: imagenia,
                             url: null,
                             file_id: null,
-                            filename: `main_photo_${Date.now()}.jpg`,
+                            filename: `${orientationPrefix}main_photo_${Date.now()}.jpg`,
                             converted: false
                         } : imagenia;
                         
@@ -1787,11 +1671,12 @@ async function addPhotoToGallery(imageData) {
         // Normalizar: si es string, crear objeto; si ya es objeto, usarlo
         let photoObj;
         if (typeof imageData === 'string') {
+            const orientationPrefix = getOrientationFilenamePrefix();
             photoObj = {
                 base64: imageData,
                 url: null,
                 file_id: null,
-                filename: `photo_${Date.now()}_${photoGallery.length + 1}.jpg`,
+                filename: `${orientationPrefix}photo_${Date.now()}_${photoGallery.length + 1}.jpg`,
                 converted: false
             };
         } else {
