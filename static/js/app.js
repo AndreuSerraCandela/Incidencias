@@ -410,6 +410,7 @@ function initializeEventListeners() {
     // Botones principales
     if (elements.takePhotoBtn) {
         elements.takePhotoBtn.addEventListener('click', () => {
+            if (!ensureAuthenticatedForAction('report')) return;
             stopNFCScanning(); // Detener NFC al pulsar reportar incidencia
             photoMode = 'reportar'; // Establecer modo "Reportar Incidencia"
             startPhotoAutoCapture();
@@ -509,6 +510,7 @@ function initializeEventListeners() {
     // Botones de acción
     if (elements.recordAudioBtn) {
         elements.recordAudioBtn.addEventListener('click', () => {
+            if (!ensureAuthenticatedForAction('record_audio')) return;
             stopNFCScanning(); // Detener NFC al pulsar grabar audio
             startAudioRecording();
         });
@@ -517,6 +519,7 @@ function initializeEventListeners() {
     // Botón para añadir múltiples fotos - abre modal de cámara
     if (elements.addPhotosBtn) {
         elements.addPhotosBtn.addEventListener('click', () => {
+            if (!ensureAuthenticatedForAction('add_photos')) return;
             stopNFCScanning(); // Detener NFC al pulsar añadir fotos
             photoMode = 'añadir'; // Establecer modo "Añadir Fotos"
             startPhotoAutoCapture(); // Abrir modal de cámara para capturar o importar
@@ -526,6 +529,7 @@ function initializeEventListeners() {
     // Botón de elementos cercanos
     if (elements.nearbyElementsBtn) {
         elements.nearbyElementsBtn.addEventListener('click', () => {
+            if (!ensureAuthenticatedForAction('nearby')) return;
             stopNFCScanning(); // Detener NFC al pulsar elementos cerca
             showNearbyElements();
         });
@@ -560,7 +564,10 @@ function initializeEventListeners() {
     
     // Enviar incidencia
     if (elements.sendIncidenceBtn) {
-        elements.sendIncidenceBtn.addEventListener('click', sendIncidenceFromPreview);
+        elements.sendIncidenceBtn.addEventListener('click', () => {
+            if (!ensureAuthenticatedForAction('send_incidence')) return;
+            sendIncidenceFromPreview();
+        });
     }
     
     // Event listeners para el modal de audio
@@ -1087,9 +1094,6 @@ async function capturePhoto() {
                             if (exifData && exifData.Orientation) {
                                 hasEXIF = true;
                                 console.log('✅ EXIF nativo encontrado en foto capturada:', exifData);
-                                setTimeout(() => {
-                                    showEXIFAlert(exifData);
-                                }, 500);
                                 resolve();
                             } else {
                                 // Si no tiene EXIF nativo o no tiene orientación, añadirlo
@@ -1100,16 +1104,6 @@ async function capturePhoto() {
                                 addBasicEXIFToImage(imageData, detectedOrientation).then((newImageData) => {
                                     imageData = newImageData;
                                     hasEXIF = true;
-                                    setTimeout(() => {
-                                        readEXIFFromBase64(imageData, (exifData) => {
-                                            if (exifData) {
-                                                showEXIFAlert({
-                                                    ...exifData,
-                                                    _note: `EXIF añadido. Orientación detectada: ${detectedOrientation}`
-                                                });
-                                            }
-                                        });
-                                    }, 500);
                                     resolve();
                                 }).catch((error) => {
                                     console.error('Error al añadir EXIF:', error);
@@ -1162,16 +1156,12 @@ async function capturePhoto() {
             imageData = await addBasicEXIFToImage(imageData, detectedOrientation);
             hasEXIF = true; // Ahora tiene EXIF básico
             
-            // Leer EXIF añadido para mostrarlo
+            // Leer EXIF añadido para debug (sin mostrar alertas)
             setTimeout(() => {
                 readEXIFFromBase64(imageData, (exifData) => {
                     if (exifData) {
                         console.log('✅ EXIF básico añadido:', exifData);
                         console.log('🔍 DEBUG: Orientación en EXIF leído:', exifData.Orientation);
-                        showEXIFAlert({
-                            ...exifData,
-                            _note: `EXIF básico añadido manualmente. Orientación detectada: ${detectedOrientation}`
-                        });
                     }
                 });
             }, 500);
@@ -5035,55 +5025,6 @@ function readEXIFFromBase64(base64Data, callback) {
     readEXIFFromFile(file, callback);
 }
 
-// Función para mostrar aviso con información EXIF
-function showEXIFAlert(exifData) {
-    if (!exifData || Object.keys(exifData).length === 0) {
-        alert('⚠️ AVISO PROVISIONAL: No se encontró información EXIF en la foto.\n\nEsto puede deberse a que:\n- La foto fue procesada y perdió los metadatos\n- El archivo no contiene información EXIF');
-        return;
-    }
-    
-    let exifText = '📸 AVISO PROVISIONAL - Información EXIF de la foto:\n\n';
-    
-    // Nota especial si el EXIF fue añadido manualmente
-    if (exifData._note) {
-        exifText += `ℹ️ ${exifData._note}\n\n`;
-    }
-    
-    if (exifData.Make || exifData.Model) {
-        exifText += `📷 Cámara: ${exifData.Make || ''} ${exifData.Model || ''}\n`;
-    }
-    
-    if (exifData.DateTime || exifData.DateTimeOriginal) {
-        exifText += `📅 Fecha: ${exifData.DateTimeOriginal || exifData.DateTime || 'N/A'}\n`;
-    }
-    
-    if (exifData.Orientation) {
-        exifText += `🔄 Orientación: ${exifData.Orientation}\n`;
-    }
-    
-    if (exifData.FNumber || exifData.ExposureTime || exifData.ISO || exifData.FocalLength) {
-        exifText += `⚙️ Configuración:\n`;
-        if (exifData.FNumber) exifText += `   - Apertura: f/${exifData.FNumber}\n`;
-        if (exifData.ExposureTime) exifText += `   - Exposición: ${exifData.ExposureTime}s\n`;
-        if (exifData.ISO) exifText += `   - ISO: ${exifData.ISO}\n`;
-        if (exifData.FocalLength) exifText += `   - Distancia focal: ${exifData.FocalLength}mm\n`;
-    }
-    
-    if (exifData.GPS) {
-        exifText += `📍 GPS: ${exifData.GPS.latitude}, ${exifData.GPS.longitude}\n`;
-    }
-    
-    if (exifData.Width || exifData.Height || exifData.PixelXDimension || exifData.PixelYDimension) {
-        const width = exifData.Width || exifData.PixelXDimension || 'N/A';
-        const height = exifData.Height || exifData.PixelYDimension || 'N/A';
-        exifText += `📐 Dimensiones: ${width} x ${height}\n`;
-    }
-    
-    exifText += '\n⚠️ NOTA: Esta información EXIF NO se está grabando en el servidor.';
-    
-    alert(exifText);
-}
-
 // Función helper para obtener el tipo de incidencia por defecto
 let cachedDefaultIncidenceType = null; // Cache para evitar múltiples llamadas
 async function getDefaultIncidenceType() {
@@ -5457,6 +5398,46 @@ async function checkAuthStatus() {
     }
 }
 
+// Verificar que el usuario esté autenticado antes de ejecutar una acción
+function ensureAuthenticatedForAction(actionName = '') {
+    if (isAuthenticated) {
+        return true;
+    }
+    
+    let actionText = 'usar esta función';
+    switch (actionName) {
+        case 'report':
+            actionText = 'reportar una incidencia';
+            break;
+        case 'add_photos':
+            actionText = 'añadir fotos';
+            break;
+        case 'record_audio':
+            actionText = 'grabar audio';
+            break;
+        case 'nearby':
+            actionText = 'ver elementos cercanos';
+            break;
+        case 'send_incidence':
+            actionText = 'enviar la incidencia';
+            break;
+    }
+    
+    showStatus(`Debes iniciar sesión para ${actionText}.`, 'error');
+    
+    // Mostrar sección de login de forma visible
+    if (elements.loginSection) {
+        elements.loginSection.style.display = 'block';
+    }
+    
+    // Abrir modal de login si está disponible
+    if (elements.loginModal) {
+        elements.loginModal.style.display = 'block';
+    }
+    
+    return false;
+}
+
 // Mostrar modal de login
 function showLoginModal() {
     if (elements.loginModal) {
@@ -5604,10 +5585,12 @@ function updateUIForAuthenticatedUser() {
     // Mostrar botones de acción
     elements.actionButtons.style.display = 'flex';
     
-    // Actualizar icono de usuario - mostrar tooltip con nombre de usuario
+    // Actualizar icono de usuario - mostrar tooltip con nombre de usuario y color verde
     if (elements.userIconBtn) {
         elements.userIconBtn.title = `Usuario: ${currentUser.username} - Clic para cerrar sesión`;
         elements.userIconBtn.style.display = 'flex';
+        elements.userIconBtn.style.backgroundColor = '#28a745'; // verde validado
+        elements.userIconBtn.style.color = '#ffffff';
     }
     
     
@@ -5638,10 +5621,12 @@ function updateUIForUnauthenticatedUser() {
     // Ocultar botones de acción
     elements.actionButtons.style.display = 'none';
     
-    // Actualizar icono de usuario - mostrar tooltip para login
+    // Actualizar icono de usuario - mostrar tooltip para login y color rojo (Malla)
     if (elements.userIconBtn) {
         elements.userIconBtn.title = 'Clic para iniciar sesión';
         elements.userIconBtn.style.display = 'flex';
+        elements.userIconBtn.style.backgroundColor = '#dc3545'; // rojo
+        elements.userIconBtn.style.color = '#ffffff';
     }
     
     

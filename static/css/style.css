@@ -731,6 +731,9 @@ main {
     border-radius: 0;
     width: 90%;
     max-width: 600px;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
     box-shadow: 0 20px 60px rgba(0,0,0,0.3);
     animation: modalSlideIn 0.3s ease-out;
 }
@@ -793,6 +796,9 @@ main {
 
 .modal-body {
     padding: 30px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    flex: 1;
 }
 
 /* Contenedor de cámara */
@@ -1086,11 +1092,14 @@ main {
     
     .modal-content {
         width: 95%;
-        margin: 10% auto;
+        margin: 5% auto;
+        max-height: 90vh;
     }
     
     .modal-body {
         padding: 20px;
+        overflow-y: auto;
+        overflow-x: hidden;
     }
     
     .camera-controls {
@@ -1136,6 +1145,33 @@ main {
     }
 }
 
+/* Tablets - entre 768px y 1024px */
+@media (min-width: 769px) and (max-width: 1024px) {
+    .modal-content {
+        max-height: 85vh;
+        margin: 3% auto;
+    }
+    
+    .modal-body {
+        padding: 25px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        -webkit-overflow-scrolling: touch;
+    }
+    
+    .camera-controls {
+        margin-top: 15px;
+        margin-bottom: 15px;
+    }
+    
+    .camera-controls .btn {
+        min-width: 120px;
+        max-width: 150px;
+        padding: 14px 12px;
+        font-size: 13px;
+    }
+}
+
 /* Dispositivos móviles */
 .mobile-device .btn {
     padding: 24px 16px;
@@ -1147,6 +1183,7 @@ main {
 .mobile-device .modal-content {
     margin: 2% auto;
     width: 98%;
+    max-height: 90vh;
 }
 
 .mobile-device .camera-video {
