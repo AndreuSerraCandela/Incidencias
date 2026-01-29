@@ -14,6 +14,7 @@ from datetime import datetime
 import uuid
 from threading import Thread
 import re
+from urllib.parse import quote
 
 # Importar whisper de forma opcional (puede no estar instalado)
 try:
@@ -1509,7 +1510,51 @@ def get_nearby_elements():
         # Conectar a SQL Server y obtener elementos cercanos
         # IMPORTANTE: En la consulta SQL, PuntoY = latitud, PuntoX = longitud
         elements = query_nearby_elements_from_sql(latitude, longitude, radius)
-        
+
+        # Intentar marcar qué elementos tienen incidencias abiertas para el usuario actual
+        try:
+            gtask_user_id = get_current_user_id()
+        except Exception as e:
+            print(f"⚠️ No se pudo obtener usuario GTask para incidencias cercanas: {e}")
+            gtask_user_id = None
+
+        if gtask_user_id and elements:
+            try:
+                # Construir un mapa recurso_id -> lista de elementos
+                resources_map = {}
+                for el in elements:
+                    recurso_id = (
+                        el.get('NumeroRecurso')
+                        or el.get('No_')
+                        or el.get('NumeroEmplazamiento')
+                        or el.get('Nº Emplazamiento')
+                        or el.get('Codigo')
+                        or el.get('codigo')
+                        or el.get('numeroRecurso')
+                        or el.get('numeroEmplazamiento')
+                    )
+                    if recurso_id:
+                        recurso_id_str = str(recurso_id)
+                        resources_map.setdefault(recurso_id_str, []).append(el)
+
+                if resources_map:
+                    resources_with_incidences = get_resources_with_open_incidences_for_user(
+                        list(resources_map.keys()), gtask_user_id
+                    )
+
+                    # Añadir flag al JSON de cada elemento
+                    for recurso_id, els in resources_map.items():
+                        has_for_user = recurso_id in resources_with_incidences
+                        for el in els:
+                            el['hasOpenIncidencesForUser'] = has_for_user
+
+                    print(
+                        f"✅ Incidencias abiertas para usuario {gtask_user_id}: "
+                        f"{len(resources_with_incidences)} recursos con incidencias"
+                    )
+            except Exception as e:
+                print(f"⚠️ Error consultando incidencias abiertas para elementos cercanos: {e}")
+
         return jsonify({
             'success': True,
             'elements': elements,
@@ -1726,6 +1771,100 @@ def query_nearby_elements_from_sql(latitude, longitude, radius_meters):
         import traceback
         traceback.print_exc()
         return []
+
+
+def get_resources_with_open_incidences_for_user(resource_ids, gtask_user_id):
+    """
+    Consulta en Business Central si hay incidencias abiertas para los recursos dados
+    y el usuario GTask indicado.
+
+    Devuelve un set con los IDs de recurso que tienen al menos una incidencia
+    'Abierta' para ese usuario.
+    """
+    from config import BC_CONFIG, get_bc_auth_header
+
+    resources_with_incidences = set()
+
+    try:
+        if not resource_ids or not gtask_user_id:
+            return resources_with_incidences
+
+        # Normalizar lista de recursos a strings únicos
+        resource_set = {str(r) for r in resource_ids if r}
+        if not resource_set:
+            return resources_with_incidences
+
+        base_url = BC_CONFIG['base_url']
+        company = BC_CONFIG.get('company', 'Malla Publicidad')
+        company_encoded = quote(company)
+
+        # URL de la vista de incidencias en Business Central
+        lista_url = (
+            f"{base_url}/powerbi/ODataV4/Company('{company_encoded}')/ListaIncidencias"
+        )
+
+        headers = {
+            "Authorization": get_bc_auth_header(),
+            "Accept": "application/json",
+        }
+
+        timeout = BC_CONFIG.get("timeout", 60)
+
+        # Construir filtro OData:
+        # - Solo incidencias Abiertas
+        # - Solo de los recursos cercanos (Recurso eq 'xxx' or Recurso eq 'yyy' ...)
+        #   El usuario GTask SE FILTRA EN PYTHON porque el campo no es filtrable.
+        resource_filters = []
+        for recurso in resource_set:
+            if not recurso:
+                continue
+            # Escapar comillas simples para OData
+            recurso_odata = recurso.replace("'", "''")
+            resource_filters.append(f"Recurso eq '{recurso_odata}'")
+
+        if not resource_filters:
+            return resources_with_incidences
+
+        resources_filter_str = " or ".join(resource_filters)
+        odata_filter = f"Estado eq 'Abierta' and ({resources_filter_str})"
+        params = {"$filter": odata_filter}
+
+        try:
+            resp = requests.get(
+                lista_url, headers=headers, params=params, timeout=timeout
+            )
+
+            if resp.status_code != 200:
+                print(
+                    f"⚠️ Error al consultar incidencias abiertas (filtro recursos) "
+                    f"para usuario {gtask_user_id}: {resp.status_code} - {resp.text[:200]}"
+                )
+                return resources_with_incidences
+
+            data = resp.json()
+            incidencias = data.get("value", [])
+
+            user_id_str = str(gtask_user_id).strip()
+
+            for inc in incidencias:
+                recurso = str(inc.get("Recurso") or "").strip()
+                inc_user_id = str(inc.get("Id_Uduario_Gtask") or "").strip()
+
+                # Solo marcar si el recurso está en la lista cercana Y
+                # la incidencia pertenece a este usuario GTask
+                if recurso and recurso in resource_set and inc_user_id == user_id_str:
+                    resources_with_incidences.add(recurso)
+
+        except Exception as e:
+            print(
+                f"⚠️ Excepción al consultar incidencias abiertas filtrando por recursos: {e}"
+            )
+
+        return resources_with_incidences
+
+    except Exception as e:
+        print(f"⚠️ Error global al consultar incidencias de recursos: {e}")
+        return resources_with_incidences
 
 @app.route('/api/process-audio', methods=['POST'])
 def process_audio():

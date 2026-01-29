@@ -6215,7 +6215,7 @@ function displayElementsOnMap(elements) {
             }
         }
         
-        // Crear contenido del popup con botón para crear incidencia
+        // Crear contenido del popup con botones de incidencia
         let popupHtml = `<div style="min-width: 200px;">`;
         popupHtml += `<b>${elementName}</b><br>`;
         if (elementId && elementId !== 'N/A') {
@@ -6228,10 +6228,21 @@ function displayElementsOnMap(elements) {
         if (elementDescription && elementDescription !== elementName) {
             popupHtml += `<small>${elementDescription}</small><br>`;
         }
+
+        // Botón para crear incidencia
         popupHtml += `<button class="btn btn-primary" onclick="createIncidenceFromElement(${index})" 
                         style="margin-top: 10px; width: 100%; padding: 5px;">
                     <i class="fas fa-exclamation-triangle"></i> Crear Incidencia
                 </button>`;
+
+        // Botón para cerrar incidencia (solo si hay incidencias abiertas para este usuario)
+        if (element.hasOpenIncidencesForUser) {
+            popupHtml += `<button class="btn btn-secondary" 
+                            style="margin-top: 6px; width: 100%; padding: 5px;">
+                        <i class="fas fa-check-circle"></i> Cerrar incidencia
+                    </button>`;
+        }
+
         popupHtml += `</div>`;
         
         const popupContent = popupHtml;
