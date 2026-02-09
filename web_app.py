@@ -328,6 +328,10 @@ def extract_exif_data(image_bytes):
 @app.route('/')
 def index():
     """Página principal de la aplicación"""
+    parada = request.args.get('parada', '')
+    recurso = request.args.get('recurso', '')
+    if parada or recurso:
+        print(f"Incidencias: Página cargada con parámetros desde Rutas → parada={parada!r}, recurso={recurso!r} | URL: {request.url}")
     return render_template('index.html')
 
 @app.route('/api/scan-qr', methods=['POST'])
@@ -1865,6 +1869,100 @@ def get_resources_with_open_incidences_for_user(resource_ids, gtask_user_id):
     except Exception as e:
         print(f"⚠️ Error global al consultar incidencias de recursos: {e}")
         return resources_with_incidences
+
+
+def get_open_incidences_for_resource(resource_id, gtask_user_id):
+    """
+    Consulta en Business Central las incidencias abiertas para un recurso y usuario.
+    Devuelve una lista de incidencias con los campos necesarios para reenviar (EnProgreso/Cerrada).
+    """
+    from config import BC_CONFIG, get_bc_auth_header
+
+    try:
+        if not resource_id or not gtask_user_id:
+            return []
+
+        base_url = BC_CONFIG['base_url']
+        company = BC_CONFIG.get('company', 'Malla Publicidad')
+        company_encoded = quote(company)
+        lista_url = (
+            f"{base_url}/powerbi/ODataV4/Company('{company_encoded}')/ListaIncidencias"
+        )
+        headers = {
+            "Authorization": get_bc_auth_header(),
+            "Accept": "application/json",
+        }
+        timeout = BC_CONFIG.get("timeout", 60)
+        recurso_odata = str(resource_id).replace("'", "''")
+        odata_filter = f"Estado eq 'Abierta' and Recurso eq '{recurso_odata}'"
+        params = {"$filter": odata_filter}
+
+        resp = requests.get(lista_url, headers=headers, params=params, timeout=timeout)
+        if resp.status_code != 200:
+            print(
+                f"⚠️ Error al obtener incidencias abiertas para recurso {resource_id}: "
+                f"{resp.status_code} - {resp.text[:200]}"
+            )
+            return []
+
+        data = resp.json()
+        incidencias = data.get("value", [])
+        user_id_str = str(gtask_user_id).strip()
+        result = []
+
+        for inc in incidencias:
+            inc_user_id = str(inc.get("Id_Uduario_Gtask") or "").strip()
+            if inc_user_id != user_id_str:
+                continue
+            recurso = str(inc.get("Recurso") or "").strip()
+            # Mapear campos BC al formato esperado por el frontend
+            result.append({
+                "resource": recurso,
+                "description": (
+                    inc.get("Descripcion") or inc.get("descripcion") or inc.get("Description") or ""
+                ),
+                "incidenceType": (
+                    inc.get("TipoIncidencia") or inc.get("tipoIncidencia") or inc.get("IncidenceType") or "EMT"
+                ),
+                "observation": (
+                    inc.get("Observacion") or inc.get("observacion") or inc.get("Observation") or ""
+                ),
+            })
+        return result
+    except Exception as e:
+        print(f"⚠️ Error al obtener incidencias abiertas para recurso: {e}")
+        return []
+
+
+@app.route('/api/open-incidences', methods=['GET'])
+def get_open_incidences():
+    """
+    GET /api/open-incidences?resource=XXX
+    Devuelve las incidencias abiertas para el recurso dado y el usuario de la sesión actual.
+    """
+    try:
+        resource = request.args.get('resource', '').strip()
+        if not resource:
+            return jsonify({'success': False, 'error': 'Falta el parámetro resource'}), 400
+
+        device_session = get_current_device_session()
+        if not device_session:
+            return jsonify({'success': False, 'error': 'No se pudo obtener la sesión del dispositivo'}), 500
+        gtask_auth = device_session.get('gtask_auth')
+        if not gtask_auth:
+            return jsonify({'success': False, 'error': 'No se pudo obtener la autenticación'}), 500
+
+        user_id = gtask_auth.get_current_user_id()
+        if not user_id or (isinstance(user_id, str) and not user_id.strip()):
+            return jsonify({'success': False, 'error': 'No hay usuario autenticado'}), 401
+
+        incidences = get_open_incidences_for_resource(resource, user_id)
+        return jsonify({'success': True, 'incidences': incidences})
+    except Exception as e:
+        import traceback
+        print(f"❌ Error en get_open_incidences: {e}\n{traceback.format_exc()}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/process-audio', methods=['POST'])
 def process_audio():

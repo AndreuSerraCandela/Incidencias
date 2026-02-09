@@ -6,7 +6,8 @@ let currentPhotoData = null; // Mantener para compatibilidad con código existen
 let imagenia = null; // Foto principal capturada/importada con "Reportar Incidencia" - se envía a la IA (única, se sustituye)
 let photoGallery = []; // Array para almacenar fotos adicionales (se envían con la incidencia pero NO a la IA)
 let currentPhotoIndex = 0; // Índice de la foto actual en la galería
-let photoMode = null; // 'reportar' o 'añadir' - indica desde dónde se abrió el modal de fotos
+let photoMode = null; // 'reportar', 'añadir' o 'cerrar' - indica desde dónde se abrió el modal de fotos
+let pendingCloseIncidenceData = null; // Datos de incidencia para cerrar (state Cerrada + foto)
 let qrDetectionInterval = null; // Para detección automática de QR
 let nfcScanning = false; // Evitar múltiples lecturas simultáneas
 let ndefReader = null; // Lector NFC para poder detenerlo
@@ -37,7 +38,8 @@ let pendingIncidenceData = {
     hasAI: false,
     isParadaBus: false,
     isMobiliario: false,
-    elementData: null
+    elementData: null,
+    resourceFromUrl: null  // Parada o recurso llegado por URL (?parada= o ?recurso=) desde app Rutas
 };
 
 // Variable para almacenar la orientación capturada al presionar el botón de la cámara
@@ -180,6 +182,49 @@ function handleActionFromURL() {
     // Detectar si viene de un shortcut de Gemini
     const urlParams = new URLSearchParams(window.location.search);
     const action = urlParams.get('action');
+    
+    // Parámetros parada/recurso desde URL (?parada=788 o ?recurso=XXX): como si se hubiera seleccionado desde elementos cercanos y pulsado Crear incidencia
+    const parada = urlParams.get('parada');
+    const recurso = urlParams.get('recurso');
+    if (parada || recurso) {
+        const id = (parada || recurso).trim();
+        currentQRData = id;
+        if (parada) {
+            pendingIncidenceData.stopNumber = id;
+            pendingIncidenceData.resourceFromUrl = null;
+            pendingIncidenceData.isParadaBus = true;
+            pendingIncidenceData.elementData = null;
+            pendingIncidenceData.isMobiliario = false;
+            console.log('📌 Parada desde URL:', id);
+        }
+        if (recurso) {
+            pendingIncidenceData.resourceFromUrl = id;
+            pendingIncidenceData.stopNumber = null;
+            pendingIncidenceData.isParadaBus = false;
+            pendingIncidenceData.elementData = null;
+            pendingIncidenceData.isMobiliario = false;
+            console.log('📌 Recurso desde URL:', id);
+        }
+        if (elements.qrData && elements.qrType && elements.qrResults) {
+            elements.qrData.textContent = id;
+            elements.qrData.href = '#';
+            elements.qrType.textContent = parada ? 'Parada' : 'Recurso';
+            elements.qrResults.style.display = 'block';
+        }
+        showStatus(parada
+            ? 'Incidencia preparada para parada ' + id + '. Toma o adjunta una foto y envía.'
+            : 'Incidencia preparada para recurso ' + id + '. Toma o adjunta una foto y envía.', 'success');
+        updateReportButton();
+        photoMode = 'reportar';
+        imagenia = null;
+        currentPhotoData = null;
+        photoGallery = [];
+        startPhotoAutoCapture();
+        if (typeof history !== 'undefined' && history.replaceState) {
+            const urlSinParams = window.location.pathname + window.location.hash;
+            history.replaceState({}, document.title, urlSinParams);
+        }
+    }
     
     console.log('🔍 Verificando parámetros de URL:', { action, url: window.location.href });
     
@@ -1170,9 +1215,9 @@ async function capturePhoto() {
         // Limpiar la orientación capturada después de usarla
         capturedOrientation = null;
         
-        // Verificar el modo: 'reportar' o 'añadir'
-        if (photoMode === 'reportar') {
-            // Modo "Reportar Incidencia": establecer como imagenia
+        // Verificar el modo: 'reportar', 'cerrar' o 'añadir'
+        if (photoMode === 'reportar' || photoMode === 'cerrar') {
+            // Modo "Reportar Incidencia" o "Cerrar incidencia": establecer como imagenia
             imagenia = imageData;
             currentPhotoData = imageData; // Mantener para compatibilidad
             
@@ -1187,7 +1232,7 @@ async function capturePhoto() {
             } : imageData;
             
             // Limpiar solo las fotos adicionales (mantener fotos adicionales existentes)
-            // La galería mostrará: imagenia + fotos adicionales
+            // La galería mostrará: imagenia + fotos adicionales existentes
             const hadAdditionalPhotos = photoGallery.length > 0 && 
                 (typeof photoGallery[0] === 'string' ? photoGallery[0] !== imagenia : 
                  (typeof photoGallery[0] === 'object' ? photoGallery[0].base64 !== imagenia : true));
@@ -1358,9 +1403,9 @@ function handlePhotoImport(event) {
             reader.onload = function(e) {
                 const imageData = e.target.result;
                 
-                // Verificar el modo: 'reportar' o 'añadir'
-                if (photoMode === 'reportar') {
-                    // Modo "Reportar Incidencia": establecer como imagenia
+                // Verificar el modo: 'reportar', 'cerrar' o 'añadir'
+                if (photoMode === 'reportar' || photoMode === 'cerrar') {
+                    // Modo "Reportar Incidencia" o "Cerrar incidencia": establecer como imagenia
                     if (index === 0) {
                         // Esta es imagenia - borrar la anterior y establecer la nueva
                         imagenia = imageData;
@@ -1389,8 +1434,8 @@ function handlePhotoImport(event) {
                 
                 // Cuando todas las fotos estén procesadas, hacer lo mismo que capturePhoto
                 if (processedCount === totalFiles) {
-                    if (photoMode === 'reportar') {
-                        console.log('📸 Imagenia importada desde Reportar Incidencia');
+                    if (photoMode === 'reportar' || photoMode === 'cerrar') {
+                        console.log('📸 Imagenia importada desde Reportar/Cerrar Incidencia');
                         
                         // Normalizar imagenia a objeto si es necesario
                         const orientationPrefix = getOrientationFilenamePrefix();
@@ -2089,13 +2134,16 @@ async function uploadPhoto() {
                 audio: []
             };
         } else {
-            // Usar datos de audio
+            // Usar datos de audio o parada/recurso desde URL (Rutas)
+            const resource = pendingIncidenceData.resourceFromUrl != null
+                ? pendingIncidenceData.resourceFromUrl
+                : (pendingIncidenceData.stopNumber ? `PARADA_${pendingIncidenceData.stopNumber}` : null);
             incidencePayload = {
                 state: 'PENDING',
                 incidenceType: defaultType,
                 observation: pendingIncidenceData.fullText || 'Incidencia reportada con audio',
                 description: pendingIncidenceData.description || 'Incidencia reportada con audio',
-                resource: `PARADA_${pendingIncidenceData.stopNumber}`,
+                resource: resource,
                 image: images,
                 audio: []
             };
@@ -2107,9 +2155,12 @@ async function uploadPhoto() {
         console.log('📸 Fotos en galería:', photoGallery.length);
         
         // Enviar incidencia en segundo plano (no bloquea la UI)
+        const resourceLabel = pendingIncidenceData.resourceFromUrl != null
+            ? pendingIncidenceData.resourceFromUrl
+            : (pendingIncidenceData.stopNumber ? `Parada ${pendingIncidenceData.stopNumber}` : '');
         const successMessage = hasQRData 
             ? 'Incidencia enviada con QR'
-            : `Incidencia enviada: Parada ${pendingIncidenceData.stopNumber} - ${pendingIncidenceData.description}`;
+            : (resourceLabel ? `Incidencia enviada: ${resourceLabel} - ${pendingIncidenceData.description}` : 'Incidencia enviada.');
         
         sendIncidenceInBackground(
             incidencePayload,
@@ -2556,12 +2607,15 @@ async function confirmAIResults() {
         });
         
         // Crear payload de la incidencia usando el tipo seleccionado
+        const resource = pendingIncidenceData.resourceFromUrl != null
+            ? pendingIncidenceData.resourceFromUrl
+            : (pendingIncidenceData.stopNumber ? `PARADA_${pendingIncidenceData.stopNumber}` : null);
         const incidencePayload = {
             state: 'PENDING',
             incidenceType: incidenceType,
             observation: pendingIncidenceData.fullText,
             description: pendingIncidenceData.description,
-            resource: `PARADA_${pendingIncidenceData.stopNumber}`,
+            resource: resource,
             image: images,
             audio: []
         };
@@ -4513,6 +4567,41 @@ async function sendIncidenceFromPreview() {
         // Si hay fotos en la galería, usarlas; si no, usar currentPhotoData para compatibilidad
         const photosToSend = photoGallery.length > 0 ? photoGallery : (currentPhotoData ? [currentPhotoData] : []);
         
+        // Modo "Cerrar incidencia": enviar state Cerrada con la foto de cierre
+        if (photoMode === 'cerrar' && pendingCloseIncidenceData) {
+            const closeImages = photosToSend.map((photoObj, index) => {
+                if (typeof photoObj === 'object' && photoObj.url) {
+                    return { file: photoObj.url, name: photoObj.filename || `cierre_${index + 1}.jpg`, file_id: photoObj.file_id };
+                }
+                const base64Data = typeof photoObj === 'string' ? photoObj : photoObj.base64;
+                return {
+                    file: base64Data,
+                    name: (typeof photoObj === 'object' && photoObj.filename) ? photoObj.filename : `cierre_${index + 1}.jpg`
+                };
+            });
+            const closePayload = {
+                state: 'Cerrada',
+                incidenceType: pendingCloseIncidenceData.incidenceType,
+                observation: pendingCloseIncidenceData.observation || '',
+                description: pendingCloseIncidenceData.description || '',
+                resource: pendingCloseIncidenceData.resource,
+                image: closeImages,
+                audio: []
+            };
+            sendIncidenceInBackground(
+                closePayload,
+                'Incidencia cerrada y enviada',
+                'Error al cerrar incidencia',
+                () => {
+                    pendingCloseIncidenceData = null;
+                    photoMode = null;
+                    resetUIAfterIncidenceSent();
+                },
+                () => { pendingCloseIncidenceData = null; photoMode = null; }
+            );
+            return;
+        }
+        
         // Determinar si tenemos datos de QR o audio
         const hasQRData = currentQRData && currentQRData.length > 0;
         const hasAudioData = pendingIncidenceData && pendingIncidenceData.hasAudio === true;
@@ -4658,11 +4747,14 @@ async function sendIncidenceFromPreview() {
             }
         });
 
-        // Usar recurso del audio/IA si está disponible, sino del QR
+        // Usar recurso: desde URL (Rutas), audio/IA (parada), o QR
         let resource;
-        if ((hasAudioData || hasAIData) && pendingIncidenceData.stopNumber) {
+        if (pendingIncidenceData.resourceFromUrl != null && pendingIncidenceData.resourceFromUrl !== '') {
+            resource = pendingIncidenceData.resourceFromUrl;
+            console.log('🔗 Usando recurso desde URL (Rutas):', resource);
+        } else if (pendingIncidenceData.stopNumber) {
             resource = `PARADA_${pendingIncidenceData.stopNumber}`;
-            console.log('🚏 Usando recurso del audio/IA:', resource);
+            console.log('🚏 Usando recurso (parada desde URL o audio/IA):', resource);
         } else if (currentQRData) {
             resource = extractQRIdFromData(currentQRData);
             console.log('📱 Usando recurso del QR:', resource);
@@ -4795,7 +4887,8 @@ function resetUIAfterIncidenceSent() {
         hasAI: false,
         isParadaBus: false,
         isMobiliario: false,
-        elementData: null
+        elementData: null,
+        resourceFromUrl: null
     };
     
     // Restablecer botones del modal de foto
@@ -6237,7 +6330,7 @@ function displayElementsOnMap(elements) {
 
         // Botón para cerrar incidencia (solo si hay incidencias abiertas para este usuario)
         if (element.hasOpenIncidencesForUser) {
-            popupHtml += `<button class="btn btn-secondary" 
+            popupHtml += `<button class="btn btn-secondary" onclick="closeIncidenceFromElement(${index})"
                             style="margin-top: 6px; width: 100%; padding: 5px;">
                         <i class="fas fa-check-circle"></i> Cerrar incidencia
                     </button>`;
@@ -6341,8 +6434,103 @@ async function createIncidenceFromElement(elementIndex) {
     }
 }
 
+// Cerrar incidencia desde un elemento del mapa: enviar EnProgreso (sin foto), luego abrir cámara y enviar Cerrada con foto
+async function closeIncidenceFromElement(elementIndex) {
+    try {
+        const marker = nearbyMarkers[elementIndex];
+        if (!marker || !marker.elementData) {
+            showStatus('Error: No se encontró el elemento seleccionado', 'error');
+            return;
+        }
+        const element = marker.elementData;
+
+        const isMobiliario = element.Tipo === 'Mobiliario' || element.tipo === 'Mobiliario' ||
+            element.NombreVista === 'MobiliarioGis' || element.nombreVista === 'MobiliarioGis';
+        const tipoParada = element.TipoParada || element.tipoParada || element['Tipo Parada'] || '';
+        const isParadaBus = isMobiliario && tipoParada && tipoParada.toString().trim().length > 0;
+
+        let elementId = '';
+        if (isMobiliario) {
+            elementId = element.NumeroEmplazamiento || element['Nº Emplazamiento'] ||
+                element.numeroEmplazamiento || element['nº emplazamiento'] || 'ELEMENTO';
+        } else {
+            elementId = element.NumeroRecurso || element.No_ ||
+                element.numeroRecurso || element.no_ ||
+                element.Codigo || element.codigo || 'ELEMENTO';
+        }
+
+        const resourceForApi = isParadaBus ? `PARADA_${elementId}` : elementId;
+        let res = await fetch(`/api/open-incidences?resource=${encodeURIComponent(resourceForApi)}`, {
+            headers: { 'X-Device-ID': deviceId }
+        });
+        let data = await res.json();
+        if (!data.success || !data.incidences || data.incidences.length === 0) {
+            if (isParadaBus) {
+                res = await fetch(`/api/open-incidences?resource=${encodeURIComponent(elementId)}`, {
+                    headers: { 'X-Device-ID': deviceId }
+                });
+                data = await res.json();
+            }
+            if (!data.success || !data.incidences || data.incidences.length === 0) {
+                showStatus('No hay incidencias abiertas para este elemento', 'warning');
+                return;
+            }
+        }
+
+        const inc = data.incidences[0];
+        const resource = inc.resource || resourceForApi;
+        const payloadEnProgreso = {
+            state: 'EnProgreso',
+            incidenceType: inc.incidenceType || 'EMT',
+            observation: inc.observation || '',
+            description: inc.description || '',
+            resource: resource,
+            image: [],
+            audio: []
+        };
+
+        showStatus('Enviando incidencia a En progreso...', 'info');
+        const postRes = await fetch('/api/incidences', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Device-ID': deviceId
+            },
+            body: JSON.stringify(payloadEnProgreso)
+        });
+        const postResult = await postRes.json();
+        if (!postResult.success) {
+            showStatus(postResult.error || 'Error al actualizar incidencia', 'error');
+            return;
+        }
+
+        closeNearbyElementsModal();
+        showStatus('Incidencia en progreso. Toma o adjunta una foto para cerrar.', 'success');
+
+        pendingCloseIncidenceData = {
+            state: 'Cerrada',
+            incidenceType: inc.incidenceType || 'EMT',
+            observation: inc.observation || '',
+            description: inc.description || '',
+            resource: resource,
+            image: [],
+            audio: []
+        };
+        currentQRData = elementId;
+        photoMode = 'cerrar';
+        imagenia = null;
+        currentPhotoData = null;
+        photoGallery = [];
+        startPhotoAutoCapture();
+    } catch (error) {
+        console.error('Error al cerrar incidencia desde elemento:', error);
+        showStatus('Error: ' + (error.message || 'Error al cerrar incidencia'), 'error');
+    }
+}
+
 // Hacer función global para el botón del popup
 window.createIncidenceFromElement = createIncidenceFromElement;
+window.closeIncidenceFromElement = closeIncidenceFromElement;
 
 // Cerrar modal de elementos cercanos
 function closeNearbyElementsModal() {
