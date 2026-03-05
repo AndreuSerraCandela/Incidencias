@@ -73,7 +73,7 @@ BC_CONFIG = {
 
 # Configuración de tipos de incidencia
 INCIDENCE_CONFIG = {
-    'types': 'EMT,Mobiliario Urbano,Grupo Taller,Poda',  # Tipos separados por comas
+    'types': 'EMT,Mobiliario Urbano,Grupo Taller,Electricidad,Poda',  # Tipos separados por comas
     'default_type': 'EMT'  # Tipo por defecto si no se especifica
 }
 
@@ -83,7 +83,9 @@ INCIDENCE_TYPE_MAPPING = {
     'Mobiliario Urbano': 'MTO',
     'Grupo Taller': 'TAREA TALLER',
     'EMT': 'EMT',
+    'Electricidad': 'ELECTRICIDAD',
     'Poda': 'PODA'
+    
 }
 
 # Configuración de búsqueda de elementos cercanos
