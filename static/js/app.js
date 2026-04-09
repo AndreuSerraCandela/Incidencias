@@ -39,8 +39,218 @@ let pendingIncidenceData = {
     isParadaBus: false,
     isMobiliario: false,
     elementData: null,
-    resourceFromUrl: null  // Parada o recurso llegado por URL (?parada= o ?recurso=) desde app Rutas
+    resourceFromUrl: null,  // Parada o recurso llegado por URL (?parada= o ?recurso=) desde app Rutas
+    /** 1 = solo EMT; 0 = EMT no permitido; null = sin restricción (QR, URL sin GIS, etc.) */
+    emtGis: null,
+    incidenceSubType: null
 };
+
+const INCIDENCE_SUBTYPES_FALLBACK = ['Mantenimiento', 'Limpieza', 'Electrico', 'Poda', 'Tip', 'Otras'];
+/** Enlace profundo ?id=INV… (WhatsApp / GMalla); se consume tras login */
+const DEEP_LINK_INCIDENCE_STORAGE_KEY = 'incidencias_deep_link_no';
+let _deepLinkIncidenceInFlight = false;
+let _lastAssignedIncidencePayload = null;
+
+/** Subtipos permitidos según tipo: EMT sin Otras/Poda; no EMT sin Tip */
+function filterSubtypesForIncidenceType(incidenceType, allSubtypes) {
+    const t = (incidenceType || '').trim();
+    const subs = (allSubtypes || []).slice();
+    if (t === 'EMT') return subs.filter(s => s !== 'Otras' && s !== 'Poda');
+    return subs.filter(s => s !== 'Tip');
+}
+
+let incidencePickerResolve = null;
+let incidencePickerAllSubtypes = [];
+let aiModalAllSubtypes = [];
+
+function finishIncidencePicker(result) {
+    if (elements.incidencePickerModal) elements.incidencePickerModal.style.display = 'none';
+    const fn = incidencePickerResolve;
+    incidencePickerResolve = null;
+    if (fn) fn(result);
+}
+
+function refillPickerSubtypeSelect(incidenceType, allSubtypes) {
+    if (!elements.pickerIncidenceSubType) return;
+    const base = (allSubtypes && allSubtypes.length) ? allSubtypes : INCIDENCE_SUBTYPES_FALLBACK.slice();
+    const filtered = filterSubtypesForIncidenceType(incidenceType, base);
+    elements.pickerIncidenceSubType.innerHTML = '';
+    filtered.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s;
+        opt.textContent = s;
+        elements.pickerIncidenceSubType.appendChild(opt);
+    });
+    if (filtered.length) elements.pickerIncidenceSubType.value = filtered[0];
+}
+
+function onAiIncidenceTypeChangeForSubtype() {
+    if (!elements.aiIncidenceType || !elements.aiIncidenceSubType) return;
+    const t = elements.aiIncidenceType.value;
+    const base = aiModalAllSubtypes.length ? aiModalAllSubtypes : INCIDENCE_SUBTYPES_FALLBACK;
+    const filtered = filterSubtypesForIncidenceType(t, base);
+    const prev = elements.aiIncidenceSubType.value;
+    elements.aiIncidenceSubType.innerHTML = '';
+    filtered.forEach(s => {
+        const opt = document.createElement('option');
+        opt.value = s;
+        opt.textContent = s;
+        elements.aiIncidenceSubType.appendChild(opt);
+    });
+    if (filtered.length) {
+        elements.aiIncidenceSubType.value = filtered.includes(prev) ? prev : filtered[0];
+    }
+}
+
+function setupIncidencePickerModalListeners() {
+    if (!elements.pickerIncidenceType || !elements.confirmIncidencePickerBtn) return;
+    elements.pickerIncidenceType.addEventListener('change', () => {
+        refillPickerSubtypeSelect(elements.pickerIncidenceType.value, incidencePickerAllSubtypes);
+    });
+    elements.confirmIncidencePickerBtn.addEventListener('click', () => {
+        const t = elements.pickerIncidenceType.value;
+        const st = elements.pickerIncidenceSubType.value;
+        if (!t || !st) {
+            showStatus('Selecciona tipo y subtipo de incidencia', 'warning');
+            return;
+        }
+        const base = incidencePickerAllSubtypes.length ? incidencePickerAllSubtypes : INCIDENCE_SUBTYPES_FALLBACK.slice();
+        const allowed = filterSubtypesForIncidenceType(t, base);
+        if (!allowed.includes(st)) {
+            showStatus('Subtipo no válido para el tipo elegido', 'error');
+            return;
+        }
+        finishIncidencePicker({ type: t, subtype: st });
+    });
+    const cancelPick = () => finishIncidencePicker(null);
+    if (elements.cancelIncidencePickerBtn) {
+        elements.cancelIncidencePickerBtn.addEventListener('click', cancelPick);
+    }
+    if (elements.closeIncidencePickerModal) {
+        elements.closeIncidencePickerModal.addEventListener('click', cancelPick);
+    }
+}
+
+function hideAssignedIncidenceModal() {
+    if (elements.assignedIncidenceModal) {
+        elements.assignedIncidenceModal.style.display = 'none';
+    }
+    _lastAssignedIncidencePayload = null;
+}
+
+function _safeHttpUrlForImg(raw) {
+    const s = String(raw || '').trim();
+    if (!s) return '';
+    try {
+        const u = new URL(s, window.location.origin);
+        if (u.protocol === 'http:' || u.protocol === 'https:') return u.href;
+    } catch (e) { /* ignore */ }
+    return '';
+}
+
+function showAssignedIncidenceModal(incidence) {
+    _lastAssignedIncidencePayload = incidence;
+    if (!elements.assignedIncidenceModal || !elements.assignedIncidenceBody) return;
+    const esc = (t) => {
+        const d = document.createElement('div');
+        d.textContent = t == null ? '' : String(t);
+        return d.innerHTML;
+    };
+    const lines = [];
+    lines.push(`<p><strong>Nº</strong> ${esc(incidence.documentNo)}</p>`);
+    if (incidence.state) lines.push(`<p><strong>Estado</strong> ${esc(incidence.state)}</p>`);
+    lines.push(`<p><strong>Recurso</strong> ${esc(incidence.resource)}</p>`);
+    lines.push(
+        `<p><strong>Tipo</strong> ${esc(incidence.incidenceType)} — ` +
+        `<strong>Subtipo</strong> ${esc(incidence.incidenceSubType)}</p>`
+    );
+    const photoUrl = _safeHttpUrlForImg(incidence.urlPrimeraImagen);
+    if (photoUrl) {
+        const safeAttr = photoUrl.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+        lines.push(
+            '<div class="assigned-incidence-photo-wrap">' +
+            `<img class="assigned-incidence-photo" src="${safeAttr}" alt="Primera imagen de la incidencia" ` +
+            'loading="lazy" referrerpolicy="no-referrer" />' +
+            '</div>'
+        );
+    }
+    const descText = (incidence.description != null && String(incidence.description).trim())
+        ? incidence.description
+        : '';
+    const obsText = (incidence.observation != null && String(incidence.observation).trim())
+        ? incidence.observation
+        : '';
+    lines.push(
+        `<p><strong>Descripción</strong><br>${descText ? esc(descText) : '<span class="assigned-incidence-empty">Sin descripción</span>'}</p>`
+    );
+    lines.push(
+        `<p><strong>Observación</strong><br>${obsText ? esc(obsText) : '<span class="assigned-incidence-empty">Sin observación</span>'}</p>`
+    );
+    elements.assignedIncidenceBody.innerHTML = lines.join('');
+    const canClose = /^abierta$/i.test((incidence.state || '').trim());
+    if (elements.assignedIncidenceContinueBtn) {
+        elements.assignedIncidenceContinueBtn.style.display = canClose ? 'block' : 'none';
+    }
+    if (elements.assignedIncidenceModalTitle) {
+        elements.assignedIncidenceModalTitle.textContent =
+            'Incidencia ' + (incidence.documentNo || '');
+    }
+    elements.assignedIncidenceModal.style.display = 'block';
+}
+
+function setupAssignedIncidenceModalListeners() {
+    if (elements.assignedIncidenceContinueBtn) {
+        elements.assignedIncidenceContinueBtn.addEventListener('click', async () => {
+            const inc = _lastAssignedIncidencePayload;
+            if (!inc || !inc.resource) return;
+            const resource = inc.resource;
+            const qrOverride = resource.startsWith('PARADA_')
+                ? resource.replace(/^PARADA_/, '')
+                : resource;
+            hideAssignedIncidenceModal();
+            await sendEnProgresoAndOpenCloseCamera(inc, resource, {
+                closeNearbyModal: false,
+                currentQrOverride: qrOverride
+            });
+        });
+    }
+    if (elements.assignedIncidenceDismissBtn) {
+        elements.assignedIncidenceDismissBtn.addEventListener('click', hideAssignedIncidenceModal);
+    }
+    if (elements.closeAssignedIncidenceModal) {
+        elements.closeAssignedIncidenceModal.addEventListener('click', hideAssignedIncidenceModal);
+    }
+}
+
+async function tryProcessDeepLinkIncidence() {
+    let no;
+    try {
+        no = sessionStorage.getItem(DEEP_LINK_INCIDENCE_STORAGE_KEY);
+    } catch (e) {
+        return;
+    }
+    if (!no || !isAuthenticated || !deviceId) return;
+    if (_deepLinkIncidenceInFlight) return;
+    _deepLinkIncidenceInFlight = true;
+    try {
+        sessionStorage.removeItem(DEEP_LINK_INCIDENCE_STORAGE_KEY);
+        const res = await fetch(
+            '/api/assigned-incidence?no=' + encodeURIComponent(no),
+            { headers: { 'X-Device-ID': deviceId } }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (!data.success || !data.incidence) {
+            showStatus(data.error || 'No se pudo cargar la incidencia del enlace.', 'error');
+            return;
+        }
+        showAssignedIncidenceModal(data.incidence);
+    } catch (e) {
+        console.error('tryProcessDeepLinkIncidence:', e);
+        showStatus('Error de red al cargar la incidencia.', 'error');
+    } finally {
+        _deepLinkIncidenceInFlight = false;
+    }
+}
 
 // Variable para almacenar la orientación capturada al presionar el botón de la cámara
 let capturedOrientation = null;
@@ -126,6 +336,7 @@ document.addEventListener('DOMContentLoaded', function() {
         aiProcessingStatus: document.getElementById('aiProcessingStatus'),
         aiResultsForm: document.getElementById('aiResultsForm'),
         aiIncidenceType: document.getElementById('aiIncidenceType'),
+        aiIncidenceSubType: document.getElementById('aiIncidenceSubType'),
         aiStopNumber: document.getElementById('aiStopNumber'),
         aiDescription: document.getElementById('aiDescription'),
         aiRawResponse: document.getElementById('aiRawResponse'),
@@ -133,6 +344,13 @@ document.addEventListener('DOMContentLoaded', function() {
         confirmAIResultsBtn: document.getElementById('confirmAIResultsBtn'),
         cancelAIResultsBtn: document.getElementById('cancelAIResultsBtn'),
         manualEntryBtn: document.getElementById('manualEntryBtn'),
+        incidencePickerModal: document.getElementById('incidencePickerModal'),
+        pickerIncidenceTypeGroup: document.getElementById('pickerIncidenceTypeGroup'),
+        pickerIncidenceType: document.getElementById('pickerIncidenceType'),
+        pickerIncidenceSubType: document.getElementById('pickerIncidenceSubType'),
+        confirmIncidencePickerBtn: document.getElementById('confirmIncidencePickerBtn'),
+        cancelIncidencePickerBtn: document.getElementById('cancelIncidencePickerBtn'),
+        closeIncidencePickerModal: document.getElementById('closeIncidencePickerModal'),
         
         // Elementos de la galería de fotos
         addPhotosBtn: document.getElementById('addPhotosBtn'),
@@ -141,13 +359,21 @@ document.addEventListener('DOMContentLoaded', function() {
         prevPhotoBtn: document.getElementById('prevPhotoBtn'),
         nextPhotoBtn: document.getElementById('nextPhotoBtn'),
         photoCount: document.getElementById('photoCount'),
+        photoPreviewUploadHint: document.getElementById('photoPreviewUploadHint'),
         
         // Elementos del modal de elementos cercanos
         nearbyElementsBtn: document.getElementById('nearbyElementsBtn'),
         nearbyElementsModal: document.getElementById('nearbyElementsModal'),
         closeNearbyModal: document.getElementById('closeNearbyModal'),
         nearbyMap: document.getElementById('nearbyMap'),
-        mapStatus: document.getElementById('mapStatus')
+        mapStatus: document.getElementById('mapStatus'),
+
+        assignedIncidenceModal: document.getElementById('assignedIncidenceModal'),
+        assignedIncidenceModalTitle: document.getElementById('assignedIncidenceModalTitle'),
+        assignedIncidenceBody: document.getElementById('assignedIncidenceBody'),
+        assignedIncidenceContinueBtn: document.getElementById('assignedIncidenceContinueBtn'),
+        assignedIncidenceDismissBtn: document.getElementById('assignedIncidenceDismissBtn'),
+        closeAssignedIncidenceModal: document.getElementById('closeAssignedIncidenceModal')
     };
     
     console.log('🔍 Elementos del DOM definidos');
@@ -182,6 +408,33 @@ function handleActionFromURL() {
     // Detectar si viene de un shortcut de Gemini
     const urlParams = new URLSearchParams(window.location.search);
     const action = urlParams.get('action');
+
+    // Enlace desde WhatsApp/GMalla: ?id=INV00028 (también ?Id=)
+    const incidenceDocNo = (urlParams.get('id') || urlParams.get('Id') || '').trim();
+    if (incidenceDocNo) {
+        try {
+            sessionStorage.setItem(DEEP_LINK_INCIDENCE_STORAGE_KEY, incidenceDocNo);
+        } catch (e) {
+            console.warn('No se pudo guardar deep link en sessionStorage:', e);
+        }
+        if (typeof history !== 'undefined' && history.replaceState) {
+            const urlSinParams = window.location.pathname + window.location.hash;
+            history.replaceState({}, document.title, urlSinParams);
+        }
+        setTimeout(() => {
+            if (!isAuthenticated) {
+                showLoginModal();
+                if (elements.loginStatus) {
+                    showLoginStatus(
+                        'Te han enlazado a una incidencia. Inicia sesión con tu usuario GTask para verla.',
+                        'info'
+                    );
+                }
+            }
+            tryProcessDeepLinkIncidence();
+        }, 400);
+        return;
+    }
     
     // Parámetros parada/recurso desde URL (?parada=788 o ?recurso=XXX): como si se hubiera seleccionado desde elementos cercanos y pulsado Crear incidencia
     const parada = urlParams.get('parada');
@@ -195,6 +448,7 @@ function handleActionFromURL() {
             pendingIncidenceData.isParadaBus = true;
             pendingIncidenceData.elementData = null;
             pendingIncidenceData.isMobiliario = false;
+            pendingIncidenceData.emtGis = null;
             console.log('📌 Parada desde URL:', id);
         }
         if (recurso) {
@@ -203,6 +457,7 @@ function handleActionFromURL() {
             pendingIncidenceData.isParadaBus = false;
             pendingIncidenceData.elementData = null;
             pendingIncidenceData.isMobiliario = false;
+            pendingIncidenceData.emtGis = null;
             console.log('📌 Recurso desde URL:', id);
         }
         if (elements.qrData && elements.qrType && elements.qrResults) {
@@ -487,6 +742,9 @@ function initializeEventListeners() {
     if (elements.manualEntryBtn) {
         elements.manualEntryBtn.addEventListener('click', handleManualEntry);
     }
+
+    setupIncidencePickerModalListeners();
+    setupAssignedIncidenceModalListeners();
     
     // Controles de cámara QR (ocultos por defecto)
     if (elements.startCameraBtn) {
@@ -1782,6 +2040,27 @@ async function addPhotoToGallery(imageData) {
     }
 }
 
+/** Texto bajo la galería (solo aplica a flujos donde el envío es inmediato al pulsar Enviar) */
+const PHOTO_PREVIEW_UPLOAD_HINT_DEFAULT =
+    '<i class="fas fa-info-circle"></i> La incidencia se enviará al sistema. Puedes seguir usando la aplicación.';
+
+/** En cierre con foto el envío real ocurre al pulsar Enviar: no mostrar el mensaje hasta entonces */
+function syncPhotoPreviewUploadHint() {
+    if (!elements.photoPreviewUploadHint) return;
+    if (photoMode === 'cerrar') {
+        elements.photoPreviewUploadHint.style.display = 'none';
+    } else {
+        elements.photoPreviewUploadHint.style.display = '';
+        elements.photoPreviewUploadHint.innerHTML = PHOTO_PREVIEW_UPLOAD_HINT_DEFAULT;
+    }
+}
+
+function showPhotoPreviewUploadHintSending() {
+    if (!elements.photoPreviewUploadHint) return;
+    elements.photoPreviewUploadHint.style.display = '';
+    elements.photoPreviewUploadHint.innerHTML = PHOTO_PREVIEW_UPLOAD_HINT_DEFAULT;
+}
+
 // Actualizar la visualización de la galería
 function updatePhotoGallery() {
     if (!elements.photoGallery) {
@@ -1894,6 +2173,7 @@ function updatePhotoGallery() {
     }
     
     currentPhotoIndex = 0;
+    syncPhotoPreviewUploadHint();
 }
 
 // Navegar por la galería
@@ -2055,6 +2335,7 @@ async function processQRImage(imageData) {
 // Mostrar resultados del QR
 function displayQRResults(qrCode) {
     currentQRData = qrCode.data;
+    pendingIncidenceData.emtGis = null;
     
     // Configurar qrData como enlace clickeable
     elements.qrData.textContent = qrCode.data;
@@ -2118,8 +2399,13 @@ async function uploadPhoto() {
             }
         });
         
-        // Obtener tipo de incidencia por defecto
-        const defaultType = await getDefaultIncidenceType();
+        const pickTs = await openIncidenceTypeSubtypePicker({});
+        if (!pickTs) {
+            showStatus('Debes elegir tipo y subtipo de incidencia', 'warning');
+            return;
+        }
+        const defaultType = pickTs.type;
+        const incidenceSubType = pickTs.subtype;
         
         if (hasQRData) {
             // Usar datos de QR
@@ -2127,6 +2413,7 @@ async function uploadPhoto() {
             incidencePayload = {
                 state: 'PENDING',
                 incidenceType: defaultType,
+                incidenceSubType: incidenceSubType,
                 observation: currentQRData,
                 description: 'Incidencia reportada con QR',
                 resource: qrId,
@@ -2141,6 +2428,7 @@ async function uploadPhoto() {
             incidencePayload = {
                 state: 'PENDING',
                 incidenceType: defaultType,
+                incidenceSubType: incidenceSubType,
                 observation: pendingIncidenceData.fullText || 'Incidencia reportada con audio',
                 description: pendingIncidenceData.description || 'Incidencia reportada con audio',
                 resource: resource,
@@ -2352,6 +2640,113 @@ async function processImageWithAI() {
     }
 }
 
+/** Normaliza campo EMT de MobiliarioGis / RecursosGis: 1, 0 o null si no aplica */
+function normalizeEmtFromElement(element) {
+    if (!element || element.EMT === undefined || element.EMT === null) {
+        return null;
+    }
+    const v = element.EMT;
+    if (v === true || v === 1 || v === '1') return 1;
+    if (v === false || v === 0 || v === '0') return 0;
+    return null;
+}
+
+/** Tipos permitidos en el picker según GIS / mobiliario (misma lógica que envío desde preview) */
+async function computeAllowedTypesForPickerFromPending() {
+    const emtGis = pendingIncidenceData.emtGis;
+    if (emtGis === 1) return ['EMT'];
+    if (pendingIncidenceData.isParadaBus && emtGis !== 0) return ['EMT'];
+    const res = await fetch('/api/incidence-types');
+    const typesData = await res.json();
+    if (!typesData.success) return [];
+    let incidenceTypes = (typesData.types || []).slice();
+    if (emtGis === 0) incidenceTypes = incidenceTypes.filter(t => t !== 'EMT');
+    if (pendingIncidenceData.isMobiliario && !pendingIncidenceData.isParadaBus) {
+        incidenceTypes = incidenceTypes.filter(type =>
+            ['EMT', 'Mobiliario Urbano', 'Soportes'].includes(type));
+    }
+    return incidenceTypes;
+}
+
+async function getIncidencePickerOptionsFromPending() {
+    const emtGis = pendingIncidenceData.emtGis;
+    if (emtGis === 1 || (pendingIncidenceData.isParadaBus && emtGis !== 0)) {
+        return { forcedType: 'EMT', allowedTypes: null };
+    }
+    const allowedTypes = await computeAllowedTypesForPickerFromPending();
+    return { forcedType: null, allowedTypes };
+}
+
+/**
+ * Modal con listas desplegables para tipo y subtipo.
+ * Si no pasas opciones, usa el contexto de pendingIncidenceData (GIS, parada, etc.).
+ */
+async function openIncidenceTypeSubtypePicker(options = {}) {
+    if (!elements.incidencePickerModal || !elements.pickerIncidenceType || !elements.pickerIncidenceSubType) {
+        showStatus('Interfaz de selección no disponible', 'error');
+        return null;
+    }
+
+    let { forcedType = null, allowedTypes = null } = options;
+    const dataRes = await fetch('/api/incidence-types');
+    const data = await dataRes.json();
+    incidencePickerAllSubtypes = (data.success && data.subtypes && data.subtypes.length)
+        ? data.subtypes.slice()
+        : INCIDENCE_SUBTYPES_FALLBACK.slice();
+
+    if (!forcedType && (!allowedTypes || !allowedTypes.length)) {
+        const o = await getIncidencePickerOptionsFromPending();
+        forcedType = o.forcedType;
+        allowedTypes = o.allowedTypes;
+    }
+
+    let typesForPicker;
+    if (forcedType) {
+        typesForPicker = [forcedType];
+        elements.pickerIncidenceType.disabled = true;
+        if (elements.pickerIncidenceTypeGroup) elements.pickerIncidenceTypeGroup.style.opacity = '0.9';
+    } else {
+        elements.pickerIncidenceType.disabled = false;
+        if (elements.pickerIncidenceTypeGroup) elements.pickerIncidenceTypeGroup.style.opacity = '1';
+        typesForPicker = (allowedTypes || []).slice();
+    }
+
+    if (!typesForPicker.length) {
+        showStatus('No hay tipos de incidencia disponibles', 'error');
+        return null;
+    }
+
+    elements.pickerIncidenceType.innerHTML = '';
+    typesForPicker.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t;
+        opt.textContent = t;
+        elements.pickerIncidenceType.appendChild(opt);
+    });
+    elements.pickerIncidenceType.value = typesForPicker[0];
+    refillPickerSubtypeSelect(elements.pickerIncidenceType.value, incidencePickerAllSubtypes);
+
+    return new Promise((resolve) => {
+        incidencePickerResolve = resolve;
+        elements.incidencePickerModal.style.display = 'block';
+    });
+}
+
+/** Subtipo por defecto según tipo (audio/pruebas) */
+async function resolveIncidenceSubtypeForPayload() {
+    if (pendingIncidenceData.incidenceSubType) {
+        return pendingIncidenceData.incidenceSubType;
+    }
+    const incType = pendingIncidenceData.incidenceType || await getDefaultIncidenceType();
+    try {
+        const r = await fetch('/api/incidence-types?incidenceType=' + encodeURIComponent(incType));
+        const d = await r.json();
+        if (d.success && d.subtypes && d.subtypes.length) return d.subtypes[0];
+    } catch (e) { /* ignore */ }
+    const loc = filterSubtypesForIncidenceType(incType, INCIDENCE_SUBTYPES_FALLBACK);
+    return loc[0] || 'Mantenimiento';
+}
+
 // Función para cargar tipos de incidencia en el select
 async function loadIncidenceTypesToSelect() {
     try {
@@ -2360,23 +2755,70 @@ async function loadIncidenceTypesToSelect() {
         
         if (!typesData.success || !elements.aiIncidenceType) {
             console.warn('⚠️ No se pudieron cargar los tipos de incidencia');
+            aiModalAllSubtypes = INCIDENCE_SUBTYPES_FALLBACK.slice();
+            if (elements.aiIncidenceSubType) {
+                elements.aiIncidenceSubType.innerHTML = '';
+                filterSubtypesForIncidenceType('EMT', aiModalAllSubtypes).forEach(s => {
+                    const opt = document.createElement('option');
+                    opt.value = s;
+                    opt.textContent = s;
+                    elements.aiIncidenceSubType.appendChild(opt);
+                });
+                elements.aiIncidenceSubType.value = elements.aiIncidenceSubType.options[0]
+                    ? elements.aiIncidenceSubType.options[0].value
+                    : 'Mantenimiento';
+            }
             return 'EMT'; // Fallback
+        }
+        
+        const emt = pendingIncidenceData.emtGis;
+        let types = (typesData.types || []).slice();
+        if (emt === 1) {
+            types = ['EMT'];
+        } else if (emt === 0) {
+            types = types.filter(t => t !== 'EMT');
+        }
+        if (types.length === 0) {
+            types = emt === 0 ? ['Mobiliario Urbano'] : ['EMT'];
         }
         
         // Limpiar opciones existentes
         elements.aiIncidenceType.innerHTML = '';
         
         // Agregar opciones
-        typesData.types.forEach(type => {
+        types.forEach(type => {
             const option = document.createElement('option');
             option.value = type;
             option.textContent = type;
             elements.aiIncidenceType.appendChild(option);
         });
         
-        // Establecer valor por defecto (EMT)
-        const defaultType = typesData.default_type || 'EMT';
+        let defaultType = typesData.default_type || 'EMT';
+        if (!types.includes(defaultType)) defaultType = types[0];
         elements.aiIncidenceType.value = defaultType;
+        
+        if (emt === 1) {
+            elements.aiIncidenceType.disabled = true;
+            elements.aiIncidenceType.title = 'Este elemento solo admite incidencias EMT';
+        } else {
+            elements.aiIncidenceType.disabled = false;
+            elements.aiIncidenceType.title = '';
+        }
+
+        aiModalAllSubtypes = (typesData.subtypes && typesData.subtypes.length)
+            ? typesData.subtypes.slice()
+            : INCIDENCE_SUBTYPES_FALLBACK.slice();
+
+        if (elements.aiIncidenceSubType && elements.aiIncidenceType) {
+            elements.aiIncidenceType.removeEventListener('change', onAiIncidenceTypeChangeForSubtype);
+            elements.aiIncidenceType.addEventListener('change', onAiIncidenceTypeChangeForSubtype);
+            onAiIncidenceTypeChangeForSubtype();
+            const defSub = typesData.default_subtype;
+            const curType = elements.aiIncidenceType.value;
+            const allowed = filterSubtypesForIncidenceType(curType, aiModalAllSubtypes);
+            if (defSub && allowed.includes(defSub)) elements.aiIncidenceSubType.value = defSub;
+            elements.aiIncidenceSubType.disabled = false;
+        }
         
         return defaultType;
     } catch (error) {
@@ -2424,8 +2866,13 @@ function closeAIResultsModal() {
         
         // Limpiar campos
         if (elements.aiIncidenceType) {
-            // Resetear al tipo por defecto (se cargará cuando se abra el modal)
             elements.aiIncidenceType.value = 'EMT';
+            elements.aiIncidenceType.disabled = false;
+            elements.aiIncidenceType.title = '';
+        }
+        if (elements.aiIncidenceSubType) {
+            elements.aiIncidenceSubType.innerHTML = '';
+            elements.aiIncidenceSubType.disabled = false;
         }
         if (elements.aiStopNumber) {
             elements.aiStopNumber.value = '';
@@ -2545,8 +2992,29 @@ async function handleManualEntry() {
 // Confirmar resultados de IA y enviar incidencia
 async function confirmAIResults() {
     try {
-        // Obtener valores corregidos
-        const incidenceType = elements.aiIncidenceType ? elements.aiIncidenceType.value : await getDefaultIncidenceType();
+        let incidenceType = elements.aiIncidenceType ? elements.aiIncidenceType.value : await getDefaultIncidenceType();
+        const emt = pendingIncidenceData.emtGis;
+        if (emt === 1) incidenceType = 'EMT';
+        if (emt === 0 && incidenceType === 'EMT') {
+            showStatus('Este elemento no admite incidencias tipo EMT', 'error');
+            alert('Este elemento no admite incidencias tipo EMT. Elige otro tipo.');
+            return;
+        }
+        const incidenceSubType = elements.aiIncidenceSubType ? elements.aiIncidenceSubType.value.trim() : '';
+        if (!incidenceSubType) {
+            showStatus('El subtipo de incidencia es obligatorio', 'error');
+            alert('Selecciona un subtipo de incidencia.');
+            return;
+        }
+        const allowedSubAi = filterSubtypesForIncidenceType(
+            incidenceType,
+            aiModalAllSubtypes.length ? aiModalAllSubtypes : INCIDENCE_SUBTYPES_FALLBACK
+        );
+        if (!allowedSubAi.includes(incidenceSubType)) {
+            showStatus('El subtipo no es válido para el tipo seleccionado', 'error');
+            alert('EMT no admite Poda ni Otras; otros tipos no admiten Tip. Elige un subtipo de la lista.');
+            return;
+        }
         const stopNumber = elements.aiStopNumber ? elements.aiStopNumber.value.trim() : '';
         const description = elements.aiDescription ? elements.aiDescription.value.trim() : '';
         
@@ -2563,16 +3031,18 @@ async function confirmAIResults() {
             return;
         }
         
-        console.log('✅ Confirmando resultados de IA:', { incidenceType, stopNumber, description });
+        console.log('✅ Confirmando resultados de IA:', { incidenceType, incidenceSubType, stopNumber, description });
         
-        // Almacenar datos en pendingIncidenceData (similar a audio)
+        // Almacenar datos en pendingIncidenceData (preservar emtGis, URL Rutas, etc.)
         pendingIncidenceData = {
+            ...pendingIncidenceData,
             stopNumber: stopNumber,
             description: description,
             fullText: `Parada ${stopNumber}, ${description}`,
             hasAudio: false,
             hasAI: true,
-            incidenceType: incidenceType // Guardar el tipo seleccionado
+            incidenceType: incidenceType,
+            incidenceSubType: incidenceSubType
         };
         
         // Cerrar modal de IA
@@ -2613,6 +3083,7 @@ async function confirmAIResults() {
         const incidencePayload = {
             state: 'PENDING',
             incidenceType: incidenceType,
+            incidenceSubType: incidenceSubType,
             observation: pendingIncidenceData.fullText,
             description: pendingIncidenceData.description,
             resource: resource,
@@ -4263,11 +4734,13 @@ async function createIncidenceWithAudio(description, audioBase64) {
         
         // Obtener tipo de incidencia por defecto
         const defaultType = await getDefaultIncidenceType();
+        const defaultSub = await resolveIncidenceSubtypeForPayload();
         
         // Crear payload de la incidencia
         const incidencePayload = {
             state: 'PENDING',
             incidenceType: defaultType,
+            incidenceSubType: defaultSub,
             observation: description,
             description: description,
             resource: qrId, // Usar el QR ID como recurso
@@ -4403,11 +4876,13 @@ async function createIncidenceWithTranscribedText(stopNumber, description, fullT
         
         // Obtener tipo de incidencia por defecto
         const defaultType = await getDefaultIncidenceType();
+        const defaultSub = await resolveIncidenceSubtypeForPayload();
         
         // Crear payload de la incidencia
         const incidencePayload = {
             state: 'PENDING',
             incidenceType: defaultType,
+            incidenceSubType: defaultSub,
             observation: fullText, // Texto completo transcrito
             description: description, // Descripción limpia
             resource: `PARADA_${stopNumber}`, // Recurso como número de parada
@@ -4441,11 +4916,13 @@ async function testIncidenceCreation() {
         
         // Obtener tipo de incidencia por defecto
         const defaultType = await getDefaultIncidenceType();
+        const defaultSub = await resolveIncidenceSubtypeForPayload();
         
         // Crear payload de prueba
         const testPayload = {
             state: 'PENDING',
             incidenceType: defaultType,
+            incidenceSubType: defaultSub,
             observation: 'Prueba de incidencia desde audio - Parada 625, cristal roto',
             description: 'cristal roto',
             resource: 'PARADA_625',
@@ -4569,6 +5046,7 @@ async function sendIncidenceFromPreview() {
         
         // Modo "Cerrar incidencia": enviar state Cerrada con la foto de cierre
         if (photoMode === 'cerrar' && pendingCloseIncidenceData) {
+            showPhotoPreviewUploadHintSending();
             const closeImages = photosToSend.map((photoObj, index) => {
                 if (typeof photoObj === 'object' && photoObj.url) {
                     return { file: photoObj.url, name: photoObj.filename || `cierre_${index + 1}.jpg`, file_id: photoObj.file_id };
@@ -4579,25 +5057,84 @@ async function sendIncidenceFromPreview() {
                     name: (typeof photoObj === 'object' && photoObj.filename) ? photoObj.filename : `cierre_${index + 1}.jpg`
                 };
             });
+            const p = pendingCloseIncidenceData;
+            const docNo = String(p.documentNo || '').trim();
             const closePayload = {
                 state: 'Cerrada',
-                incidenceType: pendingCloseIncidenceData.incidenceType,
-                observation: pendingCloseIncidenceData.observation || '',
-                description: pendingCloseIncidenceData.description || '',
-                resource: pendingCloseIncidenceData.resource,
+                incidenceType: p.incidenceType,
+                incidenceSubType: p.incidenceSubType,
+                observation: p.observation || '',
+                description: p.description || '',
+                resource: p.resource,
                 image: closeImages,
                 audio: []
             };
+            if (docNo) {
+                closePayload.documentNo = docNo;
+            }
+
+            const onDone = () => {
+                pendingCloseIncidenceData = null;
+                photoMode = null;
+                resetUIAfterIncidenceSent();
+            };
+            const onFail = () => {
+                pendingCloseIncidenceData = null;
+                photoMode = null;
+            };
+
+            // Enlace ?id=INV…: primero EnProgreso (mismo Nº BC, sin foto), luego Cerrada con foto
+            if (p.needsEnProgresoBeforeClose && docNo) {
+                (async () => {
+                    try {
+                        showStatus('Poniendo incidencia en progreso...', 'info');
+                        const progPayload = {
+                            state: 'EnProgreso',
+                            incidenceType: p.incidenceType,
+                            incidenceSubType: p.incidenceSubType,
+                            observation: p.observation || '',
+                            description: p.description || '',
+                            resource: p.resource,
+                            documentNo: docNo,
+                            image: [],
+                            audio: []
+                        };
+                        const r1 = await fetch('/api/incidences', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                'X-Device-ID': deviceId
+                            },
+                            body: JSON.stringify(progPayload)
+                        });
+                        const res1 = await r1.json();
+                        if (!res1.success) {
+                            showStatus(res1.error || 'Error al poner en progreso', 'error');
+                            onFail();
+                            return;
+                        }
+                        sendIncidenceInBackground(
+                            closePayload,
+                            'Incidencia cerrada y enviada',
+                            'Error al cerrar incidencia',
+                            onDone,
+                            onFail
+                        );
+                    } catch (e) {
+                        console.error(e);
+                        showStatus('Error al cerrar la incidencia', 'error');
+                        onFail();
+                    }
+                })();
+                return;
+            }
+
             sendIncidenceInBackground(
                 closePayload,
                 'Incidencia cerrada y enviada',
                 'Error al cerrar incidencia',
-                () => {
-                    pendingCloseIncidenceData = null;
-                    photoMode = null;
-                    resetUIAfterIncidenceSent();
-                },
-                () => { pendingCloseIncidenceData = null; photoMode = null; }
+                onDone,
+                onFail
             );
             return;
         }
@@ -4629,81 +5166,19 @@ async function sendIncidenceFromPreview() {
             }
         }
         
-        // Determinar el tipo de incidencia según el elemento
-        let selectedType = 'EMT'; // Por defecto
-        
-        // Si es una parada de bus, usar EMT automáticamente
-        if (pendingIncidenceData.isParadaBus) {
-            selectedType = 'EMT';
-            console.log('🚌 Parada de bus detectada, usando tipo EMT automáticamente');
-        } else if (pendingIncidenceData.isMobiliario && !pendingIncidenceData.isParadaBus) {
-            // Si es Mobiliario pero no es parada de bus, pedir selección
-            const typesResponse = await fetch('/api/incidence-types');
-            const typesData = await typesResponse.json();
-            
-            if (!typesData.success) {
-                showStatus('Error al obtener tipos de incidencia: ' + typesData.error, 'error');
-                return;
-            }
-
-            // Filtrar solo los tipos permitidos para Mobiliario: EMT, Mobiliario Urbano, Poda
-            const allowedTypes = ['EMT', 'Mobiliario Urbano', 'Poda'];
-            const incidenceTypes = typesData.types.filter(type => allowedTypes.includes(type));
-            
-            if (incidenceTypes.length > 1) {
-                // Mostrar selector con los tipos permitidos
-                const typeOptions = incidenceTypes.map((type, index) => `${index + 1}. ${type}`).join('\n');
-                const selection = prompt(`Selecciona el tipo de incidencia:\n${typeOptions}\n\nIngresa el número (1-${incidenceTypes.length}):`);
-                
-                if (!selection) {
-                    showStatus('Selección de tipo cancelada', 'info');
-                    return;
-                }
-                
-                const typeIndex = parseInt(selection) - 1;
-                if (typeIndex >= 0 && typeIndex < incidenceTypes.length) {
-                    selectedType = incidenceTypes[typeIndex];
-                } else {
-                    showStatus('Selección inválida', 'error');
-                    return;
-                }
-            } else if (incidenceTypes.length === 1) {
-                selectedType = incidenceTypes[0];
-            }
-        } else {
-            // Para recursos u otros casos, obtener tipos normalmente
-            const typesResponse = await fetch('/api/incidence-types');
-            const typesData = await typesResponse.json();
-            
-            if (!typesData.success) {
-                showStatus('Error al obtener tipos de incidencia: ' + typesData.error, 'error');
-                return;
-            }
-
-            const incidenceTypes = typesData.types;
-            const defaultType = typesData.default_type;
-            
-            // Si solo hay un tipo, usarlo automáticamente
-            selectedType = defaultType;
-            if (incidenceTypes.length > 1) {
-                // Si hay múltiples tipos, mostrar selector
-                const typeOptions = incidenceTypes.map((type, index) => `${index + 1}. ${type}`).join('\n');
-                const selection = prompt(`Selecciona el tipo de incidencia:\n${typeOptions}\n\nIngresa el número (1-${incidenceTypes.length}):`);
-                
-                if (!selection) {
-                    showStatus('Selección de tipo cancelada', 'info');
-                    return;
-                }
-                
-                const typeIndex = parseInt(selection) - 1;
-                if (typeIndex >= 0 && typeIndex < incidenceTypes.length) {
-                    selectedType = incidenceTypes[typeIndex];
-                } else {
-                    showStatus('Selección inválida', 'error');
-                    return;
-                }
-            }
+        const emtGis = pendingIncidenceData.emtGis;
+        const pickTs = await openIncidenceTypeSubtypePicker({});
+        if (!pickTs) {
+            showStatus('Selección de tipo cancelada', 'info');
+            return;
         }
+        const selectedType = pickTs.type;
+        const selectedSubType = pickTs.subtype;
+        if (emtGis === 0 && selectedType === 'EMT') {
+            showStatus('Este elemento no admite incidencias tipo EMT', 'error');
+            return;
+        }
+        pendingIncidenceData.incidenceSubType = selectedSubType;
 
         // Mostrar prompt con descripción pre-rellenada si está disponible (audio o IA)
         let description;
@@ -4765,6 +5240,7 @@ async function sendIncidenceFromPreview() {
         const payload = {
             state: 'PENDING',
             incidenceType: selectedType,
+            incidenceSubType: selectedSubType,
             observation: (pendingIncidenceData.hasAudio || pendingIncidenceData.hasAI) ? pendingIncidenceData.fullText : '',
             description: description.trim(),
             resource: resource,
@@ -4888,7 +5364,9 @@ function resetUIAfterIncidenceSent() {
         isParadaBus: false,
         isMobiliario: false,
         elementData: null,
-        resourceFromUrl: null
+        resourceFromUrl: null,
+        emtGis: null,
+        incidenceSubType: null
     };
     
     // Restablecer botones del modal de foto
@@ -4922,6 +5400,10 @@ function resetUIAfterIncidenceSent() {
     }
     if (elements.photoPreview) {
         elements.photoPreview.style.display = 'none';
+    }
+    if (elements.photoPreviewUploadHint) {
+        elements.photoPreviewUploadHint.style.display = '';
+        elements.photoPreviewUploadHint.innerHTML = PHOTO_PREVIEW_UPLOAD_HINT_DEFAULT;
     }
     
     // Ocultar botones de navegación de la galería
@@ -5699,6 +6181,8 @@ function updateUIForAuthenticatedUser() {
     setTimeout(() => {
         activateVoiceCommandOnLoad();
     }, 1000);
+
+    setTimeout(() => tryProcessDeepLinkIncidence(), 350);
     
     console.log('👤 UI actualizada para usuario autenticado');
 }
@@ -6404,9 +6888,12 @@ async function createIncidenceFromElement(elementIndex) {
         
         currentQRData = elementId;
         
+        // Restricción EMT desde GIS (1 = solo EMT; 0 = sin EMT)
+        pendingIncidenceData.emtGis = normalizeEmtFromElement(element);
         // Guardar información sobre si es parada de bus para usar después
         if (isParadaBus) {
             pendingIncidenceData.isParadaBus = true;
+            pendingIncidenceData.isMobiliario = true;
             pendingIncidenceData.stopNumber = elementId;
         } else {
             pendingIncidenceData.isParadaBus = false;
@@ -6432,6 +6919,87 @@ async function createIncidenceFromElement(elementIndex) {
         console.error('Error al crear incidencia desde elemento:', error);
         showStatus('Error al crear incidencia: ' + error.message, 'error');
     }
+}
+
+/**
+ * Paso común: POST EnProgreso y abrir cámara para cerrar con foto (estado Cerrada).
+ * @param {object} inc — { incidenceType, incidenceSubType, description, observation }
+ * @param {string} resource — valor Recurso para BC
+ * @param {{ closeNearbyModal?: boolean, currentQrOverride?: string }} options
+ */
+async function sendEnProgresoAndOpenCloseCamera(inc, resource, options = {}) {
+    const { closeNearbyModal = false, currentQrOverride = null } = options;
+    let subClose = inc.incidenceSubType;
+    if (!subClose) {
+        try {
+            const r = await fetch('/api/incidence-types');
+            const d = await r.json();
+            subClose = (d.success && d.default_subtype) ? d.default_subtype : INCIDENCE_SUBTYPES_FALLBACK[0];
+        } catch (e) {
+            subClose = INCIDENCE_SUBTYPES_FALLBACK[0];
+        }
+    }
+    const documentNo = String(inc.documentNo || '').trim();
+
+    const payloadEnProgreso = {
+        state: 'EnProgreso',
+        incidenceType: inc.incidenceType || 'EMT',
+        incidenceSubType: subClose,
+        observation: inc.observation || '',
+        description: inc.description || '',
+        resource: resource,
+        image: [],
+        audio: []
+    };
+    if (documentNo) {
+        payloadEnProgreso.documentNo = documentNo;
+    }
+
+    // Incidencia ya identificada (p. ej. enlace ?id=INV…): no enviar nada hasta tener foto;
+    // EnProgreso + Cerrada se encadenan al pulsar "Enviar" en la vista previa.
+    if (!documentNo) {
+        showStatus('Enviando incidencia a En progreso...', 'info');
+        const postRes = await fetch('/api/incidences', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Device-ID': deviceId
+            },
+            body: JSON.stringify(payloadEnProgreso)
+        });
+        const postResult = await postRes.json();
+        if (!postResult.success) {
+            showStatus(postResult.error || 'Error al actualizar incidencia', 'error');
+            return;
+        }
+        showStatus('Incidencia en progreso. Toma o adjunta una foto para cerrar.', 'success');
+    } else {
+        showStatus('Toma o adjunta una foto de cierre. Después pulsa Enviar incidencia.', 'success');
+    }
+
+    if (closeNearbyModal) {
+        closeNearbyElementsModal();
+    }
+
+    pendingCloseIncidenceData = {
+        state: 'Cerrada',
+        incidenceType: inc.incidenceType || 'EMT',
+        incidenceSubType: subClose,
+        observation: inc.observation || '',
+        description: inc.description || '',
+        resource: resource,
+        image: [],
+        audio: [],
+        documentNo: documentNo || undefined,
+        /** Si true, sendIncidenceFromPreview envía EnProgreso y luego Cerrada (mismo Nº BC) */
+        needsEnProgresoBeforeClose: Boolean(documentNo)
+    };
+    currentQRData = currentQrOverride != null ? currentQrOverride : resource;
+    photoMode = 'cerrar';
+    imagenia = null;
+    currentPhotoData = null;
+    photoGallery = [];
+    startPhotoAutoCapture();
 }
 
 // Cerrar incidencia desde un elemento del mapa: enviar EnProgreso (sin foto), luego abrir cámara y enviar Cerrada con foto
@@ -6479,49 +7047,10 @@ async function closeIncidenceFromElement(elementIndex) {
 
         const inc = data.incidences[0];
         const resource = inc.resource || resourceForApi;
-        const payloadEnProgreso = {
-            state: 'EnProgreso',
-            incidenceType: inc.incidenceType || 'EMT',
-            observation: inc.observation || '',
-            description: inc.description || '',
-            resource: resource,
-            image: [],
-            audio: []
-        };
-
-        showStatus('Enviando incidencia a En progreso...', 'info');
-        const postRes = await fetch('/api/incidences', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Device-ID': deviceId
-            },
-            body: JSON.stringify(payloadEnProgreso)
+        await sendEnProgresoAndOpenCloseCamera(inc, resource, {
+            closeNearbyModal: true,
+            currentQrOverride: elementId
         });
-        const postResult = await postRes.json();
-        if (!postResult.success) {
-            showStatus(postResult.error || 'Error al actualizar incidencia', 'error');
-            return;
-        }
-
-        closeNearbyElementsModal();
-        showStatus('Incidencia en progreso. Toma o adjunta una foto para cerrar.', 'success');
-
-        pendingCloseIncidenceData = {
-            state: 'Cerrada',
-            incidenceType: inc.incidenceType || 'EMT',
-            observation: inc.observation || '',
-            description: inc.description || '',
-            resource: resource,
-            image: [],
-            audio: []
-        };
-        currentQRData = elementId;
-        photoMode = 'cerrar';
-        imagenia = null;
-        currentPhotoData = null;
-        photoGallery = [];
-        startPhotoAutoCapture();
     } catch (error) {
         console.error('Error al cerrar incidencia desde elemento:', error);
         showStatus('Error: ' + (error.message || 'Error al cerrar incidencia'), 'error');

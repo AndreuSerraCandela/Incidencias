@@ -117,6 +117,27 @@
             </div>
         </div>
 
+        <!-- Modal: incidencia desde enlace (?id=Nº BC, p. ej. WhatsApp) -->
+        <div id="assignedIncidenceModal" class="modal" style="display: none;">
+            <div class="modal-content" style="max-width: 420px;">
+                <div class="modal-header">
+                    <h3 id="assignedIncidenceModalTitle"><i class="fas fa-clipboard-list"></i> Incidencia</h3>
+                    <button type="button" class="close-btn" id="closeAssignedIncidenceModal" aria-label="Cerrar">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div id="assignedIncidenceBody" class="assigned-incidence-body" style="font-size: 14px; line-height: 1.5;"></div>
+                    <div class="form-actions" style="margin-top: 16px; display: flex; flex-direction: column; gap: 8px;">
+                        <button type="button" id="assignedIncidenceContinueBtn" class="btn btn-primary" style="width: 100%; display: none;">
+                            <i class="fas fa-camera"></i> Continuar: foto de cierre
+                        </button>
+                        <button type="button" id="assignedIncidenceDismissBtn" class="btn btn-secondary" style="width: 100%;">
+                            Cerrar
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
 
         <!-- Formulario principal -->
         <div class="main-form">
@@ -187,7 +208,7 @@
             <div class="photo-counter">
                 <span id="photoCount">0</span> foto(s) añadida(s)
             </div>
-            <p class="upload-info">
+            <p id="photoPreviewUploadHint" class="upload-info">
                 <i class="fas fa-info-circle"></i> 
                 La incidencia se enviará al sistema. Puedes seguir usando la aplicación.
             </p>
@@ -364,6 +385,34 @@
             </div>
         </div>
 
+        <!-- Modal tipo y subtipo (lista desplegable, sin números) -->
+        <div id="incidencePickerModal" class="modal" style="display: none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3><i class="fas fa-tags"></i> Tipo y subtipo de incidencia</h3>
+                    <button type="button" class="close-btn" id="closeIncidencePickerModal" aria-label="Cerrar">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group" id="pickerIncidenceTypeGroup">
+                        <label for="pickerIncidenceType"><i class="fas fa-tag"></i> Tipo de incidencia</label>
+                        <select id="pickerIncidenceType" class="form-input"></select>
+                    </div>
+                    <div class="form-group">
+                        <label for="pickerIncidenceSubType"><i class="fas fa-layer-group"></i> Subtipo</label>
+                        <select id="pickerIncidenceSubType" class="form-input"></select>
+                    </div>
+                </div>
+                <div class="modal-footer" style="display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap;">
+                    <button type="button" id="cancelIncidencePickerBtn" class="btn btn-secondary">
+                        <i class="fas fa-times"></i> Cancelar
+                    </button>
+                    <button type="button" id="confirmIncidencePickerBtn" class="btn btn-success">
+                        <i class="fas fa-check"></i> Continuar
+                    </button>
+                </div>
+            </div>
+        </div>
+
         <!-- Modal para editar resultados de IA -->
         <div id="aiResultsModal" class="modal" style="display: none;">
             <div class="modal-content">
@@ -389,6 +438,16 @@
                                     <!-- Se llenará dinámicamente con los tipos disponibles -->
                                 </select>
                                 <small class="form-help">Selecciona el tipo de incidencia</small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="aiIncidenceSubType">
+                                    <i class="fas fa-layer-group"></i> Subtipo de Incidencia
+                                </label>
+                                <select id="aiIncidenceSubType" class="form-input">
+                                    <!-- Se llenará dinámicamente -->
+                                </select>
+                                <small class="form-help">Tras el tipo, elige el subtipo (Mantenimiento, Limpieza, etc.)</small>
                             </div>
                             
                             <div class="form-group">

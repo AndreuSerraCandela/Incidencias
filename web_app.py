@@ -10,6 +10,7 @@ import os
 import io
 from pyzbar.pyzbar import decode
 import tempfile
+import subprocess
 from datetime import datetime
 import uuid
 from threading import Thread
@@ -330,8 +331,12 @@ def index():
     """Página principal de la aplicación"""
     parada = request.args.get('parada', '')
     recurso = request.args.get('recurso', '')
-    if parada or recurso:
-        print(f"Incidencias: Página cargada con parámetros desde Rutas → parada={parada!r}, recurso={recurso!r} | URL: {request.url}")
+    id_incidencia = request.args.get('id', '') or request.args.get('Id', '')
+    if parada or recurso or id_incidencia:
+        print(
+            f"Incidencias: Página cargada con query → parada={parada!r}, recurso={recurso!r}, "
+            f"id={id_incidencia!r} | URL: {request.url}"
+        )
     return render_template('index.html')
 
 @app.route('/api/scan-qr', methods=['POST'])
@@ -622,12 +627,40 @@ def send_incidence_to_server_with_session(incidence_payload, gtask_auth):
         from config import get_bc_url, get_bc_incidences_url, get_bc_auth_header, BC_CONFIG
         
         # Validar payload mínimo
-        required_fields = ['state', 'incidenceType', 'description']
+        required_fields = ['state', 'incidenceType', 'incidenceSubType', 'description']
         missing = [f for f in required_fields if f not in incidence_payload or incidence_payload.get(f) in (None, '')]
         if missing:
             return {
                 'success': False,
                 'error': f"Faltan campos requeridos en la incidencia: {', '.join(missing)}"
+            }
+
+        from config import (
+            get_incidence_subtypes,
+            normalize_incidence_subtype_input,
+            get_allowed_subtypes_for_incidence_type,
+        )
+        allowed_sub = get_incidence_subtypes()
+        sub_in = str(incidence_payload.get('incidenceSubType', '')).strip()
+        sub_raw = normalize_incidence_subtype_input(sub_in)
+        if not sub_raw:
+            return {
+                'success': False,
+                'error': (
+                    f"Subtipo de incidencia no válido: {sub_in!r}. "
+                    f"Valores permitidos: {', '.join(allowed_sub)}"
+                ),
+            }
+
+        inc_type_ui = str(incidence_payload.get('incidenceType', '')).strip()
+        allowed_for_type = get_allowed_subtypes_for_incidence_type(inc_type_ui)
+        if sub_raw not in allowed_for_type:
+            return {
+                'success': False,
+                'error': (
+                    f"El subtipo {sub_raw!r} no es válido para el tipo {inc_type_ui!r}. "
+                    f"Permitidos: {', '.join(allowed_for_type)}"
+                ),
             }
 
         # Obtener ID del usuario actual de la sesión específica
@@ -755,16 +788,24 @@ def send_incidence_to_server_with_session(incidence_payload, gtask_auth):
         ]
         # Mapear tipo de incidencia para Business Central
         # "Mobiliario Urbano" se envía como "MTO" a Business Central
-        from config import map_incidence_type_for_bc
+        from config import map_incidence_type_for_bc, map_incidence_subtype_for_bc
         incidence_type = incidence_payload.get('incidenceType', '')
         mapped_incidence_type = map_incidence_type_for_bc(incidence_type)
-        
+        mapped_subtype = map_incidence_subtype_for_bc(sub_raw)
+
         # Crear la estructura de datos para BC en formato de fijaciones
         # Si el endpoint de incidencias no existe, usar el formato de fijaciones
+        doc_no_bc = str(
+            incidence_payload.get('documentNo')
+            or incidence_payload.get('bcDocumentNo')
+            or ''
+        ).strip()
+
         bc_incidence_data = {
-            "_id":"",
+            "_id": doc_no_bc,
             "state": incidence_payload.get('state', 'PENDING'),
             "incidenceType": mapped_incidence_type,  # Usar el tipo mapeado
+            "subIncidenceType": mapped_subtype,
             "observation": incidence_payload.get('observation', ''),
             "description": incidence_payload.get('description'),
             "resource": incidence_payload.get('resource'),
@@ -1450,18 +1491,35 @@ def process_photo_with_task():
 
 @app.route('/api/incidence-types', methods=['GET'])
 def get_incidence_types():
-    """API para obtener los tipos de incidencia disponibles"""
+    """API para obtener tipos y subtipos de incidencia disponibles"""
     try:
-        from config import get_incidence_types, get_default_incidence_type
-        
+        from config import (
+            get_incidence_types,
+            get_default_incidence_type,
+            get_incidence_subtypes,
+            get_default_incidence_subtype,
+            get_allowed_subtypes_for_incidence_type,
+        )
+
         types = get_incidence_types()
         default_type = get_default_incidence_type()
-        
+        for_type = request.args.get('incidenceType', '').strip()
+        if for_type:
+            subtypes = get_allowed_subtypes_for_incidence_type(for_type)
+            default_subtype = subtypes[0] if subtypes else get_default_incidence_subtype()
+        else:
+            subtypes = get_incidence_subtypes()
+            default_subtype = get_default_incidence_subtype()
+
         return jsonify({
             'success': True,
             'types': types,
             'default_type': default_type,
-            'count': len(types)
+            'count': len(types),
+            'subtypes': subtypes,
+            'default_subtype': default_subtype,
+            'subtypes_count': len(subtypes),
+            'for_incidence_type': for_type or None,
         })
         
     except Exception as e:
@@ -1648,6 +1706,7 @@ def query_nearby_elements_from_sql(latitude, longitude, radius_meters):
             [PuntoX],
             [PuntoY],
             [Incidencia],
+            [EMT],
             NULL as NumeroRecurso,
             NULL as Campanas,
             (6371000 * acos(
@@ -1689,6 +1748,7 @@ def query_nearby_elements_from_sql(latitude, longitude, radius_meters):
             [PuntoX],
             [PuntoY],
             [Incidencia],
+            [EMT],
             [No_] as NumeroRecurso,
             [Campañas] as Campanas,
             (6371000 * acos(
@@ -1876,7 +1936,7 @@ def get_open_incidences_for_resource(resource_id, gtask_user_id):
     Consulta en Business Central las incidencias abiertas para un recurso y usuario.
     Devuelve una lista de incidencias con los campos necesarios para reenviar (EnProgreso/Cerrada).
     """
-    from config import BC_CONFIG, get_bc_auth_header
+    from config import BC_CONFIG, get_bc_auth_header, normalize_incidence_subtype_input
 
     try:
         if not resource_id or not gtask_user_id:
@@ -1916,7 +1976,22 @@ def get_open_incidences_for_resource(resource_id, gtask_user_id):
                 continue
             recurso = str(inc.get("Recurso") or "").strip()
             # Mapear campos BC al formato esperado por el frontend
+            subtipo = (
+                inc.get("SubtipoIncidencia")
+                or inc.get("subtipoIncidencia")
+                or inc.get("IncidenceSubType")
+                or inc.get("Subtipo")
+                or inc.get("subtipo")
+                or ""
+            )
+            sub_str = str(subtipo).strip() if subtipo else ""
+            sub_ui = normalize_incidence_subtype_input(sub_str)
+            if not sub_ui:
+                from config import get_default_incidence_subtype
+                sub_ui = get_default_incidence_subtype()
+            doc_no = _bc_document_no_from_lista_row(inc)
             result.append({
+                "documentNo": doc_no,
                 "resource": recurso,
                 "description": (
                     inc.get("Descripcion") or inc.get("descripcion") or inc.get("Description") or ""
@@ -1924,6 +1999,7 @@ def get_open_incidences_for_resource(resource_id, gtask_user_id):
                 "incidenceType": (
                     inc.get("TipoIncidencia") or inc.get("tipoIncidencia") or inc.get("IncidenceType") or "EMT"
                 ),
+                "incidenceSubType": sub_ui,
                 "observation": (
                     inc.get("Observacion") or inc.get("observacion") or inc.get("Observation") or ""
                 ),
@@ -1932,6 +2008,183 @@ def get_open_incidences_for_resource(resource_id, gtask_user_id):
     except Exception as e:
         print(f"⚠️ Error al obtener incidencias abiertas para recurso: {e}")
         return []
+
+
+def _bc_document_no_from_lista_row(inc):
+    """Nº de documento BC en la lista OData (mismo criterio que GMalla)."""
+    if not inc or not isinstance(inc, dict):
+        return ""
+    for k in (
+        "No_", "No", "no", "NUMERO", "Numero", "numero",
+        "NumeroIncidencia", "numeroIncidencia", "Number", "number",
+    ):
+        v = inc.get(k)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return ""
+
+
+def _normalize_document_no(s):
+    return str(s or "").strip().upper().replace(" ", "")
+
+
+def _lista_incidencia_row_matches_gtask_user(inc, user_id_str: str) -> bool:
+    """
+    True si el usuario de sesión coincide con el asignado o con el usuario de la incidencia.
+    Solo se considera error de permiso si no coincide ninguno de los dos.
+    """
+    uid = (user_id_str or "").strip()
+    if not uid or not isinstance(inc, dict):
+        return False
+
+    def _first_str(*keys):
+        for k in keys:
+            v = inc.get(k)
+            if v is not None and str(v).strip():
+                return str(v).strip()
+        return ""
+
+    asignado = _first_str(
+        "Id_Uduario_Gtask_Asignado",
+        "id_Uduario_Gtask_Asignado",
+        "ID_Uduario_Gtask_Asignado",
+    )
+    usuario = _first_str(
+        "Id_Usuario_Gtask",
+        "id_Usuario_Gtask",
+        "ID_Usuario_Gtask",
+    )
+    return (bool(asignado) and asignado == uid) or (bool(usuario) and usuario == uid)
+
+
+def get_incidence_for_user_by_document_no(document_no, gtask_user_id):
+    """
+    Busca una fila en ListaIncidencias por Nº de documento (p. ej. INV00028).
+    Solo devuelve datos si el usuario coincide con Id_Uduario_Gtask_Asignado o Id_Usuario_Gtask.
+
+    Returns:
+        ("ok", dict) — payload listo para el cliente
+        ("not_found", None)
+        ("wrong_user", None) — existe pero asignada a otro usuario
+        ("error", str) — mensaje de error técnico
+    """
+    from config import BC_CONFIG, get_bc_auth_header, normalize_incidence_subtype_input
+    from config import get_default_incidence_subtype
+
+    no_requested = (document_no or "").strip()
+    if not no_requested or not gtask_user_id:
+        return ("not_found", None)
+
+    user_id_str = str(gtask_user_id).strip()
+    target_norm = _normalize_document_no(no_requested)
+    no_esc = no_requested.replace("'", "''")
+
+    try:
+        base_url = BC_CONFIG['base_url']
+        company = BC_CONFIG.get('company', 'Malla Publicidad')
+        company_encoded = quote(company)
+        lista_url = (
+            f"{base_url}/powerbi/ODataV4/Company('{company_encoded}')/ListaIncidencias"
+        )
+        headers = {
+            "Authorization": get_bc_auth_header(),
+            "Accept": "application/json",
+        }
+        timeout = BC_CONFIG.get("timeout", 60)
+
+        filters_to_try = (
+            f"No_ eq '{no_esc}'",
+            f"No eq '{no_esc}'",
+        )
+        rows = []
+        for filt in filters_to_try:
+            params = {"$filter": filt, "$top": "50"}
+            resp = requests.get(lista_url, headers=headers, params=params, timeout=timeout)
+            if resp.status_code != 200:
+                print(
+                    f"⚠️ ListaIncidencias filtro {filt[:40]}…: "
+                    f"{resp.status_code} - {resp.text[:200]}"
+                )
+                continue
+            data = resp.json()
+            batch = data.get("value") or []
+            if batch:
+                rows = batch
+                break
+
+        if not rows:
+            return ("not_found", None)
+
+        matched_wrong_user = False
+        for inc in rows:
+            row_no = _bc_document_no_from_lista_row(inc)
+            if _normalize_document_no(row_no) != target_norm:
+                continue
+            if not _lista_incidencia_row_matches_gtask_user(inc, user_id_str):
+                matched_wrong_user = True
+                continue
+
+            subtipo = (
+                inc.get("SubtipoIncidencia")
+                or inc.get("subtipoIncidencia")
+                or inc.get("IncidenceSubType")
+                or inc.get("Subtipo")
+                or inc.get("subtipo")
+                or ""
+            )
+            sub_str = str(subtipo).strip() if subtipo else ""
+            sub_ui = normalize_incidence_subtype_input(sub_str)
+            if not sub_ui:
+                sub_ui = get_default_incidence_subtype()
+
+            recurso = str(inc.get("Recurso") or "").strip()
+            estado = str(
+                inc.get("Estado") or inc.get("estado") or inc.get("State") or ""
+            ).strip()
+
+            url_foto = (
+                inc.get("URL_Primera_Imagen")
+                or inc.get("url_Primera_Imagen")
+                or inc.get("URLPrimeraImagen")
+                or inc.get("Url_Primera_Imagen")
+                or inc.get("url_primera_imagen")
+                or ""
+            )
+            url_foto = str(url_foto).strip() if url_foto else ""
+
+            payload = {
+                "documentNo": row_no or no_requested,
+                "state": estado,
+                "resource": recurso,
+                "description": (
+                    inc.get("Descripción")
+                    or inc.get("descripcion")
+                    or inc.get("Description")
+                    or ""
+                ),
+                "incidenceType": (
+                    inc.get("TipoIncidencia")
+                    or inc.get("tipoIncidencia")
+                    or inc.get("IncidenceType")
+                    or "EMT"
+                ),
+                "incidenceSubType": sub_ui,
+                "observation": (
+                    inc.get("Observación")
+                    or inc.get("observacion")
+                    or inc.get("Observation")
+                    or ""
+                ),
+                "urlPrimeraImagen": url_foto,
+            }
+            return ("ok", payload)
+
+        if matched_wrong_user:
+            return ("wrong_user", None)
+        return ("not_found", None)
+    except Exception as e:
+        print(f"⚠️ Error al buscar incidencia por Nº: {e}")
+        return ("error", str(e))
 
 
 @app.route('/api/open-incidences', methods=['GET'])
@@ -1961,6 +2214,54 @@ def get_open_incidences():
     except Exception as e:
         import traceback
         print(f"❌ Error en get_open_incidences: {e}\n{traceback.format_exc()}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/assigned-incidence', methods=['GET'])
+def get_assigned_incidence_by_no():
+    """
+    GET /api/assigned-incidence?no=INV00028
+    Incidencia asignada al usuario actual (enlace desde WhatsApp / ?id= en la URL pública).
+    """
+    try:
+        doc_no = request.args.get('no', '').strip()
+        if not doc_no:
+            return jsonify({'success': False, 'error': 'Falta el parámetro no'}), 400
+
+        device_session = get_current_device_session()
+        if not device_session:
+            return jsonify({'success': False, 'error': 'No se pudo obtener la sesión del dispositivo'}), 500
+        gtask_auth = device_session.get('gtask_auth')
+        if not gtask_auth:
+            return jsonify({'success': False, 'error': 'No se pudo obtener la autenticación'}), 500
+
+        user_id = gtask_auth.get_current_user_id()
+        if not user_id or (isinstance(user_id, str) and not user_id.strip()):
+            return jsonify({'success': False, 'error': 'No hay usuario autenticado'}), 401
+
+        status, payload = get_incidence_for_user_by_document_no(doc_no, user_id)
+        if status == "ok":
+            return jsonify({'success': True, 'incidence': payload})
+        if status == "wrong_user":
+            return jsonify({
+                'success': False,
+                'error': (
+                    'No tienes acceso: tu usuario no coincide con el asignado '
+                    'ni con el usuario de la incidencia.'
+                ),
+            }), 403
+        if status == "error":
+            return jsonify({
+                'success': False,
+                'error': payload or 'Error al consultar Business Central',
+            }), 500
+        return jsonify({
+            'success': False,
+            'error': 'No se encontró la incidencia o el número no es válido.',
+        }), 404
+    except Exception as e:
+        import traceback
+        print(f"❌ Error en get_assigned_incidence_by_no: {e}\n{traceback.format_exc()}")
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
@@ -2085,7 +2386,8 @@ def create_incidence():
     Espera un JSON con la estructura:
     {
       "state": "PENDING",
-      "incidenceType": "65a1b2...",
+      "incidenceType": "...",
+      "incidenceSubType": "Mantenimiento",
       "observation": "...",
       "description": "...",
       "resource": "65a1b2...",
@@ -2586,15 +2888,30 @@ def process_audio_with_whisper(audio_base64):
         print(f"📁 Archivo encontrado: {temp_file_path} ({file_size} bytes)")
 
         print(f"🔄 Cargando modelo Whisper 'base'...")
+        # Usar carpeta del proyecto para la caché de Whisper (evita PermissionError en IIS)
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        whisper_cache = os.path.join(project_dir, 'whisper_cache')
+        os.makedirs(whisper_cache, exist_ok=True)
         # Cargar el modelo
-        model = whisper.load_model("base")
+        model = whisper.load_model("base", download_root=whisper_cache)
 
         print(f"🎤 Transcribiendo '{temp_file_path}'...")
-        # Transcribir el audio con initial_prompt para guiar la transcripción de números
-        # El initial_prompt ayuda a Whisper a entender mejor el contexto y transcribir números como dígitos
-        result = model.transcribe(
-            temp_file_path, 
-            language="es")
+        # Bajo IIS no hay consola: stdin/stderr no válidos. Whisper usa ffmpeg vía
+        # whisper.audio.load_audio, que hace "from subprocess import run" y llama run().
+        # Hay que parchear run en ese módulo, no subprocess.run global.
+        import whisper.audio as _whisper_audio
+        _original_run = _whisper_audio.run
+        def _safe_run(*args, **kwargs):
+            # Solo stdin; con capture_output=True no se puede pasar stderr/stdout
+            kwargs.setdefault('stdin', subprocess.DEVNULL)
+            return _original_run(*args, **kwargs)
+        _whisper_audio.run = _safe_run
+        try:
+            result = model.transcribe(
+                temp_file_path,
+                language="es")
+        finally:
+            _whisper_audio.run = _original_run
 
         # Obtener el texto transcrito
         transcription = result["text"].strip()

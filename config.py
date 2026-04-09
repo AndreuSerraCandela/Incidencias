@@ -73,7 +73,7 @@ BC_CONFIG = {
 
 # Configuración de tipos de incidencia
 INCIDENCE_CONFIG = {
-    'types': 'EMT,Mobiliario Urbano,Grupo Taller,Electricidad,Poda',  # Tipos separados por comas
+    'types': 'EMT,Mobiliario Urbano,Soportes',  # Tipos separados por comas
     'default_type': 'EMT'  # Tipo por defecto si no se especifica
 }
 
@@ -81,11 +81,24 @@ INCIDENCE_CONFIG = {
 # "Mobiliario Urbano" se envía como "MTO" a Business Central
 INCIDENCE_TYPE_MAPPING = {
     'Mobiliario Urbano': 'MTO',
-    'Grupo Taller': 'TAREA TALLER',
     'EMT': 'EMT',
-    'Electricidad': 'ELECTRICIDAD',
-    'Poda': 'PODA'
-    
+    'Soportes': 'SOPORTES',
+}
+
+# Subtipos de incidencia (tras elegir el tipo)
+INCIDENCE_SUBTYPES_CONFIG = {
+    'subtypes': 'Mantenimiento,Limpieza,Electrico,Poda,Tip,Otras',
+    'default_subtype': 'Mantenimiento',
+}
+
+# Mapeo opcional de subtipos para Business Central (si BC usa otros códigos)
+INCIDENCE_SUBTYPE_MAPPING = {
+    'Mantenimiento': 'MANTENIMIENTO',
+    'Limpieza': 'LIMPIEZA',
+    'Electrico': 'ELECTRICO',
+    'Poda': 'PODA',
+    'Tip': 'TIP',
+    'Otras': 'OTRAS',
 }
 
 # Configuración de búsqueda de elementos cercanos
@@ -153,4 +166,55 @@ def map_incidence_type_for_bc(incidence_type):
     """Mapea el tipo de incidencia para Business Central.
     'Mobiliario Urbano' se convierte en 'MTO'"""
     return INCIDENCE_TYPE_MAPPING.get(incidence_type, incidence_type)
+
+
+def get_incidence_subtypes():
+    """Lista de subtipos de incidencia disponibles."""
+    s = INCIDENCE_SUBTYPES_CONFIG.get('subtypes', 'Mantenimiento')
+    return [x.strip() for x in s.split(',') if x.strip()]
+
+
+def get_allowed_subtypes_for_incidence_type(incidence_type: str) -> list:
+    """
+    Subtipos permitidos según el tipo de incidencia.
+    EMT: no Otras ni Poda. No EMT: no Tip.
+    """
+    all_subs = get_incidence_subtypes()
+    t = (incidence_type or '').strip()
+    if t == 'EMT':
+        return [s for s in all_subs if s not in ('Otras', 'Poda')]
+    return [s for s in all_subs if s != 'Tip']
+
+
+def get_default_incidence_subtype():
+    """Subtipo por defecto."""
+    subs = get_incidence_subtypes()
+    default = INCIDENCE_SUBTYPES_CONFIG.get('default_subtype', 'Mantenimiento')
+    if default in subs:
+        return default
+    return subs[0] if subs else 'Mantenimiento'
+
+
+def map_incidence_subtype_for_bc(subtype):
+    """Mapea el subtipo para Business Central."""
+    return INCIDENCE_SUBTYPE_MAPPING.get(subtype, subtype)
+
+
+def normalize_incidence_subtype_input(raw):
+    """
+    Convierte un subtipo recibido del cliente o de BC al valor UI canónico.
+    Acepta nombres de pantalla o códigos ya mapeados para BC.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    ui_list = get_incidence_subtypes()
+    if s in ui_list:
+        return s
+    reverse = {v: k for k, v in INCIDENCE_SUBTYPE_MAPPING.items()}
+    if s in reverse:
+        return reverse[s]
+    return None
 
