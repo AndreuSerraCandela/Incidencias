@@ -73,7 +73,7 @@ BC_CONFIG = {
 
 # Configuración de tipos de incidencia
 INCIDENCE_CONFIG = {
-    'types': 'EMT,Mobiliario Urbano,Soportes',  # Tipos separados por comas
+    'types': 'EMT,Mobiliario Urbano,Vallas',  # Tipos separados por comas
     'default_type': 'EMT'  # Tipo por defecto si no se especifica
 }
 
@@ -82,7 +82,7 @@ INCIDENCE_CONFIG = {
 INCIDENCE_TYPE_MAPPING = {
     'Mobiliario Urbano': 'MTO',
     'EMT': 'EMT',
-    'Soportes': 'SOPORTES',
+    'Vallas': 'VALLAS',
 }
 
 # Subtipos de incidencia (tras elegir el tipo)
