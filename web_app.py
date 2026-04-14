@@ -2010,6 +2010,17 @@ def get_open_incidences_for_resource(resource_id, gtask_user_id):
         return []
 
 
+def _lista_incidencia_pick_str(inc, keys):
+    """Primer campo no vacío de la fila OData (variantes de nombre de columna)."""
+    if not inc or not isinstance(inc, dict):
+        return ""
+    for k in keys:
+        v = inc.get(k)
+        if v is not None and str(v).strip():
+            return str(v).strip()
+    return ""
+
+
 def _bc_document_no_from_lista_row(inc):
     """Nº de documento BC en la lista OData (mismo criterio que GMalla)."""
     if not inc or not isinstance(inc, dict):
@@ -2093,8 +2104,8 @@ def get_incidence_for_user_by_document_no(document_no, gtask_user_id):
         timeout = BC_CONFIG.get("timeout", 60)
 
         filters_to_try = (
-            f"No_ eq '{no_esc}'",
             f"No eq '{no_esc}'",
+            f"No_ eq '{no_esc}'",
         )
         rows = []
         for filt in filters_to_try:
@@ -2152,12 +2163,68 @@ def get_incidence_for_user_by_document_no(document_no, gtask_user_id):
             )
             url_foto = str(url_foto).strip() if url_foto else ""
 
+            resource_name = _lista_incidencia_pick_str(
+                inc,
+                (
+                    "Nombre_recurso",
+                    "nombre_recurso",
+                    "Nombre_Recurso",
+                    "NOMBRE_RECURSO",
+                    "Resource_Name",
+                    "resource_name",
+                    "NombreRecurso",
+                    "nombreRecurso",
+                ),
+            )
+            address = _lista_incidencia_pick_str(
+                inc,
+                (
+                    "Dirección",
+                    "Direccion",
+                    "direccion",
+                    "DIRECCION",
+                    "Address",
+                    "address",
+                ),
+            )
+            punto_x = _lista_incidencia_pick_str(
+                inc,
+                (
+                    "PuntoX",
+                    "punto_x",
+                    "Punto_X",
+                    "puntoX",
+                    "Longitud",
+                    "longitud",
+                    "Lon",
+                    "lon",
+                ),
+            )
+            punto_y = _lista_incidencia_pick_str(
+                inc,
+                (
+                    "PuntoY",
+                    "punto_y",
+                    "Punto_Y",
+                    "puntoY",
+                    "Latitud",
+                    "latitud",
+                    "Lat",
+                    "lat",
+                ),
+            )
+
             payload = {
                 "documentNo": row_no or no_requested,
                 "state": estado,
                 "resource": recurso,
+                "resourceName": resource_name,
+                "address": address,
+                "puntoX": punto_x,
+                "puntoY": punto_y,
                 "description": (
                     inc.get("Descripción")
+                    or inc.get("Descripcion")
                     or inc.get("descripcion")
                     or inc.get("Description")
                     or ""
@@ -2171,6 +2238,7 @@ def get_incidence_for_user_by_document_no(document_no, gtask_user_id):
                 "incidenceSubType": sub_ui,
                 "observation": (
                     inc.get("Observación")
+                    or inc.get("Observacion")
                     or inc.get("observacion")
                     or inc.get("Observation")
                     or ""

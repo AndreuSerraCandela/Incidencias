@@ -148,6 +148,41 @@ function _safeHttpUrlForImg(raw) {
     return '';
 }
 
+function _escHtmlAttr(s) {
+    return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;');
+}
+
+/**
+ * Enlace a Google Maps a partir de PuntoX / PuntoY (WGS84).
+ * Prueba Y=lat, X=lng y al revés; si no encaja en grados, usa búsqueda genérica.
+ */
+function buildGoogleMapsUrlFromPuntoXY(pxRaw, pyRaw) {
+    if (pxRaw == null || pyRaw == null) return '';
+    const normalizeNum = (v) => {
+        const t = String(v).trim().replace(/\s/g, '').replace(',', '.');
+        const n = parseFloat(t);
+        return Number.isFinite(n) ? n : NaN;
+    };
+    const x = normalizeNum(pxRaw);
+    const y = normalizeNum(pyRaw);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return '';
+    const tryOrder = (lat, lng) => {
+        if (Math.abs(lat) <= 90 && Math.abs(lng) <= 180) {
+            return `https://www.google.com/maps?q=${encodeURIComponent(lat)},${encodeURIComponent(lng)}`;
+        }
+        return '';
+    };
+    let url = tryOrder(y, x);
+    if (!url) url = tryOrder(x, y);
+    if (!url) {
+        return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${y},${x}`)}`;
+    }
+    return url;
+}
+
 function showAssignedIncidenceModal(incidence) {
     _lastAssignedIncidencePayload = incidence;
     if (!elements.assignedIncidenceModal || !elements.assignedIncidenceBody) return;
@@ -160,6 +195,28 @@ function showAssignedIncidenceModal(incidence) {
     lines.push(`<p><strong>Nº</strong> ${esc(incidence.documentNo)}</p>`);
     if (incidence.state) lines.push(`<p><strong>Estado</strong> ${esc(incidence.state)}</p>`);
     lines.push(`<p><strong>Recurso</strong> ${esc(incidence.resource)}</p>`);
+    if (incidence.resourceName) {
+        lines.push(`<p><strong>Nombre del recurso</strong><br>${esc(incidence.resourceName)}</p>`);
+    }
+    if (incidence.address) {
+        lines.push(`<p><strong>Dirección</strong><br>${esc(incidence.address)}</p>`);
+    }
+    const px = incidence.puntoX;
+    const py = incidence.puntoY;
+    const mapsUrl = buildGoogleMapsUrlFromPuntoXY(px, py);
+    if (mapsUrl && (String(px).trim() || String(py).trim())) {
+        const label = [py, px].filter(Boolean).join(', ');
+        lines.push(
+            '<p class="assigned-incidence-maps-row">' +
+            `<a href="${_escHtmlAttr(mapsUrl)}" target="_blank" rel="noopener noreferrer" class="assigned-incidence-maps-link">` +
+            '<i class="fas fa-map-marker-alt" aria-hidden="true"></i> ' +
+            `Ver en Google Maps${label ? ' (' + esc(label) + ')' : ''}</a></p>`
+        );
+    } else if (String(px || '').trim() || String(py || '').trim()) {
+        lines.push(
+            `<p><strong>Coordenadas</strong><br>${esc(py || '—')}, ${esc(px || '—')}</p>`
+        );
+    }
     lines.push(
         `<p><strong>Tipo</strong> ${esc(incidence.incidenceType)} — ` +
         `<strong>Subtipo</strong> ${esc(incidence.incidenceSubType)}</p>`
@@ -187,9 +244,12 @@ function showAssignedIncidenceModal(incidence) {
         `<p><strong>Observación</strong><br>${obsText ? esc(obsText) : '<span class="assigned-incidence-empty">Sin observación</span>'}</p>`
     );
     elements.assignedIncidenceBody.innerHTML = lines.join('');
-    const canClose = /^abierta$/i.test((incidence.state || '').trim());
     if (elements.assignedIncidenceContinueBtn) {
-        elements.assignedIncidenceContinueBtn.style.display = canClose ? 'block' : 'none';
+        const btn = elements.assignedIncidenceContinueBtn;
+        btn.style.display = 'inline-flex';
+        btn.disabled = false;
+        btn.title = 'Foto de cierre';
+        btn.setAttribute('aria-label', 'Continuar: foto de cierre');
     }
     if (elements.assignedIncidenceModalTitle) {
         elements.assignedIncidenceModalTitle.textContent =
@@ -213,9 +273,6 @@ function setupAssignedIncidenceModalListeners() {
                 currentQrOverride: qrOverride
             });
         });
-    }
-    if (elements.assignedIncidenceDismissBtn) {
-        elements.assignedIncidenceDismissBtn.addEventListener('click', hideAssignedIncidenceModal);
     }
     if (elements.closeAssignedIncidenceModal) {
         elements.closeAssignedIncidenceModal.addEventListener('click', hideAssignedIncidenceModal);
@@ -372,7 +429,6 @@ document.addEventListener('DOMContentLoaded', function() {
         assignedIncidenceModalTitle: document.getElementById('assignedIncidenceModalTitle'),
         assignedIncidenceBody: document.getElementById('assignedIncidenceBody'),
         assignedIncidenceContinueBtn: document.getElementById('assignedIncidenceContinueBtn'),
-        assignedIncidenceDismissBtn: document.getElementById('assignedIncidenceDismissBtn'),
         closeAssignedIncidenceModal: document.getElementById('closeAssignedIncidenceModal')
     };
     
@@ -2663,7 +2719,7 @@ async function computeAllowedTypesForPickerFromPending() {
     if (emtGis === 0) incidenceTypes = incidenceTypes.filter(t => t !== 'EMT');
     if (pendingIncidenceData.isMobiliario && !pendingIncidenceData.isParadaBus) {
         incidenceTypes = incidenceTypes.filter(type =>
-            ['EMT', 'Mobiliario Urbano', 'Soportes'].includes(type));
+            ['EMT', 'Mobiliario Urbano', 'Vallas'].includes(type));
     }
     return incidenceTypes;
 }

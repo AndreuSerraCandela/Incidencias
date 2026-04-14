@@ -1213,6 +1213,49 @@ main {
     font-style: italic;
 }
 
+.assigned-incidence-maps-row {
+    margin: 10px 0;
+}
+.assigned-incidence-maps-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    color: #0d6efd;
+    text-decoration: none;
+}
+.assigned-incidence-maps-link:hover {
+    text-decoration: underline;
+}
+
+.assigned-incidence-toolbar {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+.assigned-incidence-toolbar-btn {
+    width: 56px;
+    height: 56px;
+    min-width: 56px;
+    max-width: none;
+    flex: 0 0 auto;
+    padding: 0;
+    display: inline-flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    border-radius: 12px;
+    font-size: 0.95rem;
+    line-height: 1;
+}
+.assigned-incidence-toolbar-btn i {
+    font-size: 1rem;
+    margin-bottom: 0;
+}
+
 /* Animaciones */
 .btn, .modal-content, .results-section, .photo-section {
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);

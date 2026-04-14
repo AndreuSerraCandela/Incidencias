@@ -125,15 +125,12 @@
                     <button type="button" class="close-btn" id="closeAssignedIncidenceModal" aria-label="Cerrar">&times;</button>
                 </div>
                 <div class="modal-body">
-                    <div id="assignedIncidenceBody" class="assigned-incidence-body" style="font-size: 14px; line-height: 1.5;"></div>
-                    <div class="form-actions" style="margin-top: 16px; display: flex; flex-direction: column; gap: 8px;">
-                        <button type="button" id="assignedIncidenceContinueBtn" class="btn btn-primary" style="width: 100%; display: none;">
-                            <i class="fas fa-camera"></i> Continuar: foto de cierre
-                        </button>
-                        <button type="button" id="assignedIncidenceDismissBtn" class="btn btn-secondary" style="width: 100%;">
-                            Cerrar
+                    <div class="assigned-incidence-toolbar">
+                        <button type="button" id="assignedIncidenceContinueBtn" class="btn btn-primary assigned-incidence-toolbar-btn" title="Foto de cierre" aria-label="Continuar: foto de cierre">
+                            <i class="fas fa-camera" aria-hidden="true"></i>
                         </button>
                     </div>
+                    <div id="assignedIncidenceBody" class="assigned-incidence-body" style="font-size: 14px; line-height: 1.5;"></div>
                 </div>
             </div>
         </div>
