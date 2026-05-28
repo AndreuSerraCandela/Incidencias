@@ -51,6 +51,8 @@ const INCIDENCE_SUBTYPES_FALLBACK = ['Mantenimiento', 'Limpieza', 'Electrico', '
 const INCIDENCE_TYPE_FALLBACK = 'Mobiliario Urbano';
 /** Enlace profundo ?id=INV… (WhatsApp / GMalla); se consume tras login */
 const DEEP_LINK_INCIDENCE_STORAGE_KEY = 'incidencias_deep_link_no';
+/** Enlace desde Rutas u otras apps: ?action=nearby o ?cerca=1 */
+const PENDING_NEARBY_STORAGE_KEY = 'incidencias_pending_nearby';
 let _deepLinkIncidenceInFlight = false;
 let _lastAssignedIncidencePayload = null;
 
@@ -375,6 +377,27 @@ function setupAssignedIncidenceModalListeners() {
     }
 }
 
+function tryOpenPendingNearbyElements() {
+    var pending = false;
+    try {
+        pending = sessionStorage.getItem(PENDING_NEARBY_STORAGE_KEY) === '1';
+    } catch (e) {
+        return;
+    }
+    if (!pending || !isAuthenticated) {
+        return;
+    }
+    try {
+        sessionStorage.removeItem(PENDING_NEARBY_STORAGE_KEY);
+    } catch (e) { /* ignore */ }
+    if (typeof stopNFCScanning === 'function') {
+        stopNFCScanning();
+    }
+    if (typeof showNearbyElements === 'function') {
+        showNearbyElements();
+    }
+}
+
 async function tryProcessDeepLinkIncidence() {
     let no;
     try {
@@ -585,6 +608,29 @@ function handleActionFromURL() {
             }
             tryProcessDeepLinkIncidence();
         }, 400);
+        return;
+    }
+
+    // Desde Rutas (u otra app): abrir directamente el mapa «Elementos cerca»
+    if (action === 'nearby' || urlParams.get('cerca') === '1') {
+        try {
+            sessionStorage.setItem(PENDING_NEARBY_STORAGE_KEY, '1');
+        } catch (e) {
+            console.warn('No se pudo guardar pending nearby en sessionStorage:', e);
+        }
+        if (typeof history !== 'undefined' && history.replaceState) {
+            history.replaceState({}, document.title, window.location.pathname + window.location.hash);
+        }
+        if (!isAuthenticated) {
+            showLoginModal();
+            if (elements.loginStatus) {
+                showLoginStatus(
+                    'Inicia sesión con tu usuario GTask para ver elementos cercanos en el mapa.',
+                    'info'
+                );
+            }
+        }
+        setTimeout(() => tryOpenPendingNearbyElements(), 800);
         return;
     }
     
@@ -1187,12 +1233,10 @@ function closePhotoModal() {
     elements.photoModal.style.display = 'none';
     
     // Restablecer estado del modal para la próxima vez
-    // NO ocultar la vista previa si hay una foto capturada - el usuario debe poder verla y enviarla
-    // Solo ocultar la vista previa si no hay foto capturada
-    if (elements.photoPreview && !currentPhotoData) {
+    // NO ocultar la vista previa si hay foto o flujo de cierre activo
+    const hasPreviewPhotos = photoGallery.length > 0 || !!currentPhotoData;
+    if (elements.photoPreview && !hasPreviewPhotos && !pendingCloseIncidenceData) {
         elements.photoPreview.style.display = 'none';
-        
-        // Ocultar botón de enviar incidencia
         if (elements.sendIncidenceBtn) {
             elements.sendIncidenceBtn.style.display = 'none';
         }
@@ -1693,7 +1737,8 @@ async function capturePhoto() {
                 }
             })();
             
-            console.log('📸 Imagenia capturada (para IA):', imageData.substring(0, 100) + '...'); // Debug
+            const imgDbg = typeof imageData === 'string' ? imageData.substring(0, 100) : '[objeto]';
+            console.log('📸 Imagenia capturada (para IA):', imgDbg + '...');
         } else if (photoMode === 'añadir') {
             // Modo "Añadir Fotos": solo añadir a la galería, NO tocar imagenia
             addPhotoToGallery(imageData);
@@ -2215,13 +2260,146 @@ const SEND_INCIDENCE_BTN_HTML_CLOSE =
 function syncSendIncidenceBtnLabel() {
     if (!elements.sendIncidenceBtn) return;
     elements.sendIncidenceBtn.innerHTML =
-        photoMode === 'cerrar' ? SEND_INCIDENCE_BTN_HTML_CLOSE : SEND_INCIDENCE_BTN_HTML_REPORT;
+        isCloseIncidenceFlow() ? SEND_INCIDENCE_BTN_HTML_CLOSE : SEND_INCIDENCE_BTN_HTML_REPORT;
+}
+
+function setSendIncidenceBtnBusy(busy) {
+    if (!elements.sendIncidenceBtn) return;
+    elements.sendIncidenceBtn.disabled = !!busy;
+    elements.sendIncidenceBtn.style.opacity = busy ? '0.65' : '1';
+    elements.sendIncidenceBtn.style.pointerEvents = busy ? 'none' : '';
+}
+
+/** Construye payload de imágenes para BC (URL o base64). */
+function buildIncidenceImagesPayload(photosToSend, namePrefix) {
+    const out = [];
+    photosToSend.forEach((photoObj, index) => {
+        if (typeof photoObj === 'object' && photoObj && photoObj.url) {
+            out.push({
+                file: photoObj.url,
+                name: photoObj.filename || `${namePrefix}_${index + 1}.jpg`,
+                file_id: photoObj.file_id
+            });
+            return;
+        }
+        const base64Data = typeof photoObj === 'string' ? photoObj : (photoObj && photoObj.base64);
+        if (!base64Data) return;
+        out.push({
+            file: base64Data,
+            name: (typeof photoObj === 'object' && photoObj && photoObj.filename)
+                ? photoObj.filename
+                : `${namePrefix}_${index + 1}.jpg`
+        });
+    });
+    return out;
+}
+
+/** True si el usuario está cerrando una incidencia existente (mapa, enlace, etc.). */
+function isCloseIncidenceFlow() {
+    return photoMode === 'cerrar' || !!pendingCloseIncidenceData;
+}
+
+/** POST /api/incidences y espera respuesta (cierre y envíos que deben confirmarse). */
+async function postIncidenceApi(payload) {
+    console.log('📡 POST /api/incidences', {
+        state: payload.state,
+        documentNo: payload.documentNo,
+        resource: payload.resource,
+        images: (payload.image || []).length
+    });
+    const response = await fetch('/api/incidences', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Device-ID': deviceId
+        },
+        body: JSON.stringify(payload)
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!result.success) {
+        const msg = result.error || `Error HTTP ${response.status}`;
+        throw new Error(msg);
+    }
+    return result;
+}
+
+function closeIncidenceDescription(p) {
+    const d = String(p.description || '').trim();
+    if (d) return d;
+    const o = String(p.observation || '').trim();
+    if (o) return o;
+    const doc = String(p.documentNo || '').trim();
+    return doc ? `Cierre incidencia ${doc}` : 'Cierre de incidencia';
+}
+
+/** Espera a que las fotos tengan URL o base64 (p. ej. conversión en curso). */
+async function waitForPhotosReady(photos, maxMs = 12000) {
+    const deadline = Date.now() + maxMs;
+    while (Date.now() < deadline) {
+        const ready = buildIncidenceImagesPayload(photos, 'cierre');
+        if (ready.length > 0) return ready;
+        await new Promise((r) => setTimeout(r, 250));
+    }
+    return buildIncidenceImagesPayload(photos, 'cierre');
+}
+
+/** EnProgreso (si aplica) + Cerrada con foto para incidencia ya identificada. */
+async function submitCloseIncidenceWithPhotos(photosToSend) {
+    const p = pendingCloseIncidenceData;
+    if (!p) {
+        throw new Error('No hay datos de la incidencia a cerrar.');
+    }
+
+    const docNo = String(p.documentNo || '').trim();
+    if (!docNo) {
+        throw new Error('Falta el número de incidencia (documentNo) para cerrar.');
+    }
+
+    showStatus('Preparando foto de cierre...', 'info');
+    const closeImages = await waitForPhotosReady(photosToSend);
+    if (!closeImages.length) {
+        throw new Error('No hay fotos válidas para cerrar la incidencia.');
+    }
+
+    const desc = closeIncidenceDescription(p);
+    const baseFields = {
+        incidenceType: p.incidenceType || INCIDENCE_TYPE_FALLBACK,
+        incidenceSubType: p.incidenceSubType,
+        observation: p.observation || '',
+        description: desc,
+        resource: p.resource,
+        documentNo: docNo
+    };
+
+    if (p.needsEnProgresoBeforeClose) {
+        showStatus('Poniendo incidencia en progreso...', 'info');
+        try {
+            await postIncidenceApi({
+                state: 'EnProgreso',
+                ...baseFields,
+                image: [],
+                audio: []
+            });
+        } catch (e) {
+            console.warn('EnProgreso antes de cerrar:', e.message);
+            // Continuar con Cerrada: en algunos entornos la incidencia ya está en progreso
+        }
+    }
+
+    showStatus('Cerrando incidencia...', 'info');
+    await postIncidenceApi({
+        state: 'Cerrada',
+        ...baseFields,
+        image: closeImages,
+        audio: []
+    });
+    showStatus('Incidencia cerrada y enviada', 'success');
 }
 
 /** En cierre con foto el envío real ocurre al pulsar Enviar: no mostrar el mensaje hasta entonces */
 function syncPhotoPreviewUploadHint() {
     if (!elements.photoPreviewUploadHint) return;
-    if (photoMode === 'cerrar') {
+    if (isCloseIncidenceFlow()) {
         elements.photoPreviewUploadHint.style.display = 'none';
     } else {
         elements.photoPreviewUploadHint.style.display = '';
@@ -5203,9 +5381,10 @@ function playBeep(frequency = 880, durationMs = 120) {
 async function sendIncidenceFromPreview() {
     try {
         console.log('📤 sendIncidenceFromPreview ejecutada');
+        console.log('📸 photoMode:', photoMode, 'pendingClose:', !!pendingCloseIncidenceData);
         console.log('📸 currentPhotoData existe:', !!currentPhotoData);
+        console.log('📸 photoGallery.length:', photoGallery.length);
         console.log('📸 currentQRData:', currentQRData);
-        console.log('📸 pendingIncidenceData:', pendingIncidenceData);
         
         // Verificar que tenemos fotos en la galería
         if (photoGallery.length === 0 && !currentPhotoData) {
@@ -5216,98 +5395,36 @@ async function sendIncidenceFromPreview() {
         // Si hay fotos en la galería, usarlas; si no, usar currentPhotoData para compatibilidad
         const photosToSend = photoGallery.length > 0 ? photoGallery : (currentPhotoData ? [currentPhotoData] : []);
         
-        // Modo "Cerrar incidencia": enviar state Cerrada con la foto de cierre
-        if (photoMode === 'cerrar' && pendingCloseIncidenceData) {
-            showPhotoPreviewUploadHintSending();
-            const closeImages = photosToSend.map((photoObj, index) => {
-                if (typeof photoObj === 'object' && photoObj.url) {
-                    return { file: photoObj.url, name: photoObj.filename || `cierre_${index + 1}.jpg`, file_id: photoObj.file_id };
-                }
-                const base64Data = typeof photoObj === 'string' ? photoObj : photoObj.base64;
-                return {
-                    file: base64Data,
-                    name: (typeof photoObj === 'object' && photoObj.filename) ? photoObj.filename : `cierre_${index + 1}.jpg`
-                };
-            });
-            const p = pendingCloseIncidenceData;
-            const docNo = String(p.documentNo || '').trim();
-            const closePayload = {
-                state: 'Cerrada',
-                incidenceType: p.incidenceType,
-                incidenceSubType: p.incidenceSubType,
-                observation: p.observation || '',
-                description: p.description || '',
-                resource: p.resource,
-                image: closeImages,
-                audio: []
-            };
-            if (docNo) {
-                closePayload.documentNo = docNo;
+        // Modo "Cerrar incidencia": POST Cerrada + documentNo + foto (no flujo de nueva incidencia)
+        if (isCloseIncidenceFlow()) {
+            if (!pendingCloseIncidenceData) {
+                showStatus(
+                    'No se encontraron los datos de cierre. Vuelve a pulsar "Cerrar incidencia" en el mapa.',
+                    'error'
+                );
+                return;
             }
-
-            const onDone = () => {
+            if (photoMode !== 'cerrar') {
+                photoMode = 'cerrar';
+                syncSendIncidenceBtnLabel();
+            }
+            console.log('🔒 Cierre de incidencia:', {
+                documentNo: pendingCloseIncidenceData.documentNo,
+                photos: photosToSend.length
+            });
+            setSendIncidenceBtnBusy(true);
+            try {
+                showPhotoPreviewUploadHintSending();
+                await submitCloseIncidenceWithPhotos(photosToSend);
                 pendingCloseIncidenceData = null;
                 photoMode = null;
                 resetUIAfterIncidenceSent();
-            };
-            const onFail = () => {
-                pendingCloseIncidenceData = null;
-                photoMode = null;
-            };
-
-            // Enlace ?id=INV…: primero EnProgreso (mismo Nº BC, sin foto), luego Cerrada con foto
-            if (p.needsEnProgresoBeforeClose && docNo) {
-                (async () => {
-                    try {
-                        showStatus('Poniendo incidencia en progreso...', 'info');
-                        const progPayload = {
-                            state: 'EnProgreso',
-                            incidenceType: p.incidenceType,
-                            incidenceSubType: p.incidenceSubType,
-                            observation: p.observation || '',
-                            description: p.description || '',
-                            resource: p.resource,
-                            documentNo: docNo,
-                            image: [],
-                            audio: []
-                        };
-                        const r1 = await fetch('/api/incidences', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json',
-                                'X-Device-ID': deviceId
-                            },
-                            body: JSON.stringify(progPayload)
-                        });
-                        const res1 = await r1.json();
-                        if (!res1.success) {
-                            showStatus(res1.error || 'Error al poner en progreso', 'error');
-                            onFail();
-                            return;
-                        }
-                        sendIncidenceInBackground(
-                            closePayload,
-                            'Incidencia cerrada y enviada',
-                            'Error al cerrar incidencia',
-                            onDone,
-                            onFail
-                        );
-                    } catch (e) {
-                        console.error(e);
-                        showStatus('Error al cerrar la incidencia', 'error');
-                        onFail();
-                    }
-                })();
-                return;
+            } catch (e) {
+                console.error('Error al cerrar incidencia:', e);
+                showStatus(e.message || 'Error al cerrar la incidencia', 'error');
+            } finally {
+                setSendIncidenceBtnBusy(false);
             }
-
-            sendIncidenceInBackground(
-                closePayload,
-                'Incidencia cerrada y enviada',
-                'Error al cerrar incidencia',
-                onDone,
-                onFail
-            );
             return;
         }
         
@@ -6359,6 +6476,7 @@ function updateUIForAuthenticatedUser() {
     }, 1000);
 
     setTimeout(() => tryProcessDeepLinkIncidence(), 350);
+    setTimeout(() => tryOpenPendingNearbyElements(), 500);
     
     console.log('👤 UI actualizada para usuario autenticado');
 }
@@ -7117,42 +7235,16 @@ async function sendEnProgresoAndOpenCloseCamera(inc, resource, options = {}) {
         }
     }
     const documentNo = String(inc.documentNo || '').trim();
-
-    const payloadEnProgreso = {
-        state: 'EnProgreso',
-        incidenceType: inc.incidenceType || INCIDENCE_TYPE_FALLBACK,
-        incidenceSubType: subClose,
-        observation: inc.observation || '',
-        description: inc.description || '',
-        resource: resource,
-        image: [],
-        audio: []
-    };
-    if (documentNo) {
-        payloadEnProgreso.documentNo = documentNo;
-    }
-
-    // Incidencia ya identificada (p. ej. enlace ?id=INV…): no enviar nada hasta tener foto;
-    // EnProgreso + Cerrada se encadenan al pulsar "Enviar" en la vista previa.
     if (!documentNo) {
-        showStatus('Enviando incidencia a En progreso...', 'info');
-        const postRes = await fetch('/api/incidences', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Device-ID': deviceId
-            },
-            body: JSON.stringify(payloadEnProgreso)
-        });
-        const postResult = await postRes.json();
-        if (!postResult.success) {
-            showStatus(postResult.error || 'Error al actualizar incidencia', 'error');
-            return;
-        }
-        showStatus('Incidencia en progreso. Toma o adjunta una foto para cerrar.', 'success');
-    } else {
-        showStatus('Toma o adjunta una foto de cierre. Después pulsa Cerrar incidencia.', 'success');
+        showStatus(
+            'No se pudo obtener el número de la incidencia abierta. No se puede cerrar desde aquí.',
+            'error'
+        );
+        return;
     }
+
+    // EnProgreso + Cerrada se encadenan al pulsar "Cerrar incidencia" en la vista previa.
+    showStatus('Toma o adjunta una foto de cierre. Después pulsa Cerrar incidencia.', 'success');
 
     if (closeNearbyModal) {
         closeNearbyElementsModal();
@@ -7167,9 +7259,9 @@ async function sendEnProgresoAndOpenCloseCamera(inc, resource, options = {}) {
         resource: resource,
         image: [],
         audio: [],
-        documentNo: documentNo || undefined,
+        documentNo: documentNo,
         /** Si true, sendIncidenceFromPreview envía EnProgreso y luego Cerrada (mismo Nº BC) */
-        needsEnProgresoBeforeClose: Boolean(documentNo)
+        needsEnProgresoBeforeClose: true
     };
     currentQRData = currentQrOverride != null ? currentQrOverride : resource;
     photoMode = 'cerrar';
@@ -7224,6 +7316,13 @@ async function closeIncidenceFromElement(elementIndex) {
         }
 
         const inc = data.incidences[0];
+        if (!String(inc.documentNo || '').trim()) {
+            showStatus(
+                'La incidencia abierta no tiene número de documento en BC. No se puede cerrar.',
+                'error'
+            );
+            return;
+        }
         const resource = inc.resource || resourceForApi;
         await sendEnProgresoAndOpenCloseCamera(inc, resource, {
             closeNearbyModal: true,
