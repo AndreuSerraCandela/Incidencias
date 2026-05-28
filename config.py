@@ -74,7 +74,7 @@ BC_CONFIG = {
 # Configuración de tipos de incidencia
 INCIDENCE_CONFIG = {
     'types': 'EMT,Mobiliario Urbano,Vallas',  # Tipos separados por comas
-    'default_type': 'EMT'  # Tipo por defecto si no se especifica
+    'default_type': 'Mobiliario Urbano'  # Tipo por defecto si no se especifica
 }
 
 # Mapeo de tipos de incidencia para Business Central
@@ -150,7 +150,7 @@ def get_timeout_for_image(image_size_mb):
 # Función para obtener tipos de incidencia disponibles
 def get_incidence_types():
     """Obtiene la lista de tipos de incidencia disponibles"""
-    types_str = INCIDENCE_CONFIG.get('types', 'EMT')
+    types_str = INCIDENCE_CONFIG.get('types', 'Mobiliario Urbano')
     return [t.strip() for t in types_str.split(',') if t.strip()]
 
 # Función para obtener el tipo de incidencia por defecto
@@ -159,7 +159,7 @@ def get_default_incidence_type():
     types = get_incidence_types()
     if len(types) == 1:
         return types[0]
-    return INCIDENCE_CONFIG.get('default_type', 'EMT')
+    return INCIDENCE_CONFIG.get('default_type', 'Mobiliario Urbano')
 
 # Función para mapear tipo de incidencia para Business Central
 def map_incidence_type_for_bc(incidence_type):

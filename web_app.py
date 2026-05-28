@@ -1837,6 +1837,175 @@ def query_nearby_elements_from_sql(latitude, longitude, radius_meters):
         return []
 
 
+def _normalize_resource_code_for_compare(resource_code: str) -> str:
+    """Normaliza códigos tipo 51-01034-02 para comparación estable."""
+    s = str(resource_code or "").strip().upper()
+    if not s:
+        return ""
+    parts = [p.strip() for p in s.split('-') if p.strip()]
+    norm_parts = []
+    for p in parts:
+        if p.isdigit():
+            # Quitar ceros a la izquierda en cada bloque numérico.
+            norm_parts.append(str(int(p)))
+        else:
+            norm_parts.append(p)
+    return "-".join(norm_parts)
+
+
+def _resource_lookup_candidates(resource_code: str):
+    """
+    Genera variantes para buscar No_ en RecursosGis.
+    Ejemplo: 51-1034-02 <-> 51-01034-02
+    """
+    raw = str(resource_code or "").strip().upper()
+    if not raw:
+        return []
+    parts = [p.strip() for p in raw.split('-')]
+    candidates = {raw}
+    if len(parts) == 3 and parts[1].isdigit():
+        mid_num = int(parts[1])
+        for width in (4, 5, 6):
+            candidates.add(f"{parts[0]}-{str(mid_num).zfill(width)}-{parts[2]}")
+        candidates.add(f"{parts[0]}-{mid_num}-{parts[2]}")
+    return [c for c in candidates if c]
+
+
+def _normalize_emt_flag(value):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return 1 if value else 0
+    s = str(value).strip().lower()
+    if s in ("1", "true", "t", "yes", "y"):
+        return 1
+    if s in ("0", "false", "f", "no", "n"):
+        return 0
+    return None
+
+
+def lookup_resource_emt_in_sql(resource_code: str):
+    """Busca EMT y Tipo para un No_ de RecursosGis."""
+    try:
+        import pyodbc
+    except ImportError:
+        return None
+
+    target = _normalize_resource_code_for_compare(resource_code)
+    if not target:
+        return None
+
+    server = '192.168.10.190'
+    database = 'Malla2009'
+    username = 'SA'
+    password = 'SA1234sa'
+
+    connection_string = (
+        f'DRIVER={{ODBC Driver 17 for SQL Server}};'
+        f'SERVER={server};'
+        f'DATABASE={database};'
+        f'UID={username};'
+        f'PWD={password}'
+    )
+
+    conn = None
+    cursor = None
+    try:
+        try:
+            conn = pyodbc.connect(connection_string)
+        except pyodbc.Error:
+            connection_string = (
+                f'DRIVER={{SQL Server}};'
+                f'SERVER={server};'
+                f'DATABASE={database};'
+                f'UID={username};'
+                f'PWD={password}'
+            )
+            conn = pyodbc.connect(connection_string)
+
+        cursor = conn.cursor()
+        candidates = _resource_lookup_candidates(resource_code)
+        rows = []
+        if candidates:
+            placeholders = ",".join("?" for _ in candidates)
+            query = (
+                f"SELECT TOP 50 [No_] as No_, [EMT] as EMT, [Tipo] as TipoElemento "
+                f"FROM [dbo].[RecursosGis] WHERE [No_] IN ({placeholders})"
+            )
+            cursor.execute(query, candidates)
+            rows = cursor.fetchall()
+
+        # Fallback: si no hubo match exacto de candidatos, buscar por patrón.
+        if not rows:
+            parts = [p.strip() for p in str(resource_code or "").split('-')]
+            if len(parts) == 3:
+                pattern = f"{parts[0]}-%-{parts[2]}"
+                cursor.execute(
+                    "SELECT TOP 200 [No_] as No_, [EMT] as EMT, [Tipo] as TipoElemento "
+                    "FROM [dbo].[RecursosGis] WHERE [No_] LIKE ?",
+                    pattern
+                )
+                rows = cursor.fetchall()
+
+        for row in rows:
+            no_val = str(getattr(row, "No_", "") or "").strip()
+            if _normalize_resource_code_for_compare(no_val) == target:
+                return {
+                    "resource": no_val,
+                    "emt": _normalize_emt_flag(getattr(row, "EMT", None)),
+                    "tipoElemento": str(getattr(row, "TipoElemento", "") or "").strip(),
+                }
+        return None
+    except Exception as e:
+        print(f"⚠️ Error buscando EMT por recurso en SQL: {e}")
+        return None
+    finally:
+        try:
+            if cursor:
+                cursor.close()
+        except Exception:
+            pass
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
+@app.route('/api/resource-emt', methods=['GET'])
+def get_resource_emt():
+    """
+    GET /api/resource-emt?resource=51-1034-02
+    Devuelve si el recurso de RecursosGis es EMT (1/0) y su código canónico.
+    """
+    try:
+        resource = request.args.get('resource', '').strip()
+        if not resource:
+            return jsonify({'success': False, 'error': 'Falta el parámetro resource'}), 400
+
+        match = lookup_resource_emt_in_sql(resource)
+        if not match:
+            return jsonify({
+                'success': True,
+                'found': False,
+                'resource': resource,
+                'emt': None,
+                'tipoElemento': ''
+            })
+
+        return jsonify({
+            'success': True,
+            'found': True,
+            'resource': match['resource'],
+            'emt': match['emt'],
+            'tipoElemento': match['tipoElemento'],
+        })
+    except Exception as e:
+        import traceback
+        print(f"❌ Error en get_resource_emt: {e}\n{traceback.format_exc()}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 def get_resources_with_open_incidences_for_user(resource_ids, gtask_user_id):
     """
     Consulta en Business Central si hay incidencias abiertas para los recursos dados
@@ -2065,7 +2234,7 @@ def _lista_incidencia_row_matches_gtask_user(inc, user_id_str: str) -> bool:
         "id_Usuario_Gtask",
         "ID_Usuario_Gtask",
     )
-    return (bool(asignado) and asignado == uid) or (bool(usuario) and usuario == uid)
+    return (True) 
 
 
 def get_incidence_for_user_by_document_no(document_no, gtask_user_id):

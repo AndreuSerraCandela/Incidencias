@@ -28,6 +28,8 @@ let lastSoundTime = null; // Última vez que se detectó sonido
 // Variable para controlar el procesamiento de IA
 let aiProcessingController = null; // AbortController para cancelar el fetch de IA
 let manualEntryRequested = false; // Bandera para indicar que el usuario eligió entrada manual
+let aiStopResourceLookupTimer = null;
+let aiStopResourceLookupSeq = 0;
 
 // Variables para almacenar datos de incidencia
 let pendingIncidenceData = {
@@ -46,6 +48,7 @@ let pendingIncidenceData = {
 };
 
 const INCIDENCE_SUBTYPES_FALLBACK = ['Mantenimiento', 'Limpieza', 'Electrico', 'Poda', 'Tip', 'Otras'];
+const INCIDENCE_TYPE_FALLBACK = 'Mobiliario Urbano';
 /** Enlace profundo ?id=INV… (WhatsApp / GMalla); se consume tras login */
 const DEEP_LINK_INCIDENCE_STORAGE_KEY = 'incidencias_deep_link_no';
 let _deepLinkIncidenceInFlight = false;
@@ -100,6 +103,99 @@ function onAiIncidenceTypeChangeForSubtype() {
     if (filtered.length) {
         elements.aiIncidenceSubType.value = filtered.includes(prev) ? prev : filtered[0];
     }
+}
+
+/** Tipo fijo para el modal IA/manual según contexto recurso/parada y flag EMT */
+function resolveFixedIncidenceTypeForAi(availableTypes, defaultType) {
+    const types = Array.isArray(availableTypes) ? availableTypes : [];
+    const hasType = (t) => types.includes(t);
+    const emt = pendingIncidenceData.emtGis;
+
+    if (emt === 1 && hasType('EMT')) {
+        return 'EMT';
+    }
+    if (pendingIncidenceData.isParadaBus && hasType('Mobiliario Urbano')) {
+        return 'Mobiliario Urbano';
+    }
+    if (pendingIncidenceData.isMobiliario && hasType('Mobiliario Urbano')) {
+        return 'Mobiliario Urbano';
+    }
+
+    const tipoElemento = String(
+        (pendingIncidenceData.elementData && (
+            pendingIncidenceData.elementData.TipoElemento ||
+            pendingIncidenceData.elementData.tipoElemento ||
+            pendingIncidenceData.elementData.Tipo ||
+            pendingIncidenceData.elementData.tipo
+        )) || ''
+    ).toUpperCase();
+    if (
+        hasType('Vallas') &&
+        (tipoElemento.includes('VALLA') || tipoElemento.includes('VPEATON'))
+    ) {
+        return 'Vallas';
+    }
+
+    if (emt !== 1 && hasType(INCIDENCE_TYPE_FALLBACK)) {
+        return INCIDENCE_TYPE_FALLBACK;
+    }
+    if (defaultType && hasType(defaultType)) {
+        return defaultType;
+    }
+    return types[0] || INCIDENCE_TYPE_FALLBACK;
+}
+
+function _normalizeResourceCodeForCompare(code) {
+    const s = String(code || '').trim().toUpperCase();
+    if (!s) return '';
+    const parts = s.split('-').map(p => p.trim()).filter(Boolean);
+    const norm = parts.map((p) => {
+        if (/^\d+$/.test(p)) return String(parseInt(p, 10));
+        return p;
+    });
+    return norm.join('-');
+}
+
+async function refreshAiTypeFromStopOrResourceInput() {
+    if (!elements.aiStopNumber) return;
+    const raw = String(elements.aiStopNumber.value || '').trim();
+    if (!raw || !raw.includes('-')) return;
+
+    const requestId = ++aiStopResourceLookupSeq;
+    try {
+        const res = await fetch(
+            '/api/resource-emt?resource=' + encodeURIComponent(raw),
+            { headers: { 'X-Device-ID': deviceId } }
+        );
+        const data = await res.json().catch(() => ({}));
+        if (requestId !== aiStopResourceLookupSeq) return;
+        if (!data.success) return;
+
+        const typedNorm = _normalizeResourceCodeForCompare(raw);
+        const matchedNorm = _normalizeResourceCodeForCompare(data.resource || '');
+        if (data.found && matchedNorm && typedNorm === matchedNorm) {
+            const emt = data.emt === 1 ? 1 : (data.emt === 0 ? 0 : null);
+            pendingIncidenceData.emtGis = emt;
+            pendingIncidenceData.isParadaBus = false;
+            pendingIncidenceData.isMobiliario = false;
+            pendingIncidenceData.elementData = {
+                ...(pendingIncidenceData.elementData || {}),
+                TipoElemento: data.tipoElemento || '',
+            };
+            await loadIncidenceTypesToSelect();
+        }
+    } catch (e) {
+        console.warn('⚠️ No se pudo recalcular tipo por recurso:', e);
+    }
+}
+
+function scheduleAiTypeRefreshFromInput() {
+    if (aiStopResourceLookupTimer) {
+        clearTimeout(aiStopResourceLookupTimer);
+    }
+    aiStopResourceLookupTimer = setTimeout(() => {
+        refreshAiTypeFromStopOrResourceInput();
+    }, 280);
 }
 
 function setupIncidencePickerModalListeners() {
@@ -527,6 +623,7 @@ function handleActionFromURL() {
             : 'Incidencia preparada para recurso ' + id + '. Toma o adjunta una foto y envía.', 'success');
         updateReportButton();
         photoMode = 'reportar';
+        syncSendIncidenceBtnLabel();
         imagenia = null;
         currentPhotoData = null;
         photoGallery = [];
@@ -769,6 +866,7 @@ function initializeEventListeners() {
             if (!ensureAuthenticatedForAction('report')) return;
             stopNFCScanning(); // Detener NFC al pulsar reportar incidencia
             photoMode = 'reportar'; // Establecer modo "Reportar Incidencia"
+            syncSendIncidenceBtnLabel();
             startPhotoAutoCapture();
         });
     }
@@ -797,6 +895,10 @@ function initializeEventListeners() {
     
     if (elements.manualEntryBtn) {
         elements.manualEntryBtn.addEventListener('click', handleManualEntry);
+    }
+    if (elements.aiStopNumber) {
+        elements.aiStopNumber.addEventListener('input', scheduleAiTypeRefreshFromInput);
+        elements.aiStopNumber.addEventListener('blur', refreshAiTypeFromStopOrResourceInput);
     }
 
     setupIncidencePickerModalListeners();
@@ -881,6 +983,7 @@ function initializeEventListeners() {
             if (!ensureAuthenticatedForAction('add_photos')) return;
             stopNFCScanning(); // Detener NFC al pulsar añadir fotos
             photoMode = 'añadir'; // Establecer modo "Añadir Fotos"
+            syncSendIncidenceBtnLabel();
             startPhotoAutoCapture(); // Abrir modal de cámara para capturar o importar
         });
     }
@@ -1663,6 +1766,7 @@ async function capturePhoto() {
         // Mostrar botón de enviar incidencia
         if (elements.sendIncidenceBtn) {
             elements.sendIncidenceBtn.style.display = 'flex';
+            syncSendIncidenceBtnLabel();
         }
         
         // Cambiar botones
@@ -1877,6 +1981,7 @@ function handlePhotoImport(event) {
                     // Mostrar botón de enviar incidencia
                     if (elements.sendIncidenceBtn) {
                         elements.sendIncidenceBtn.style.display = 'flex';
+                        syncSendIncidenceBtnLabel();
                     }
                     
                     // Cambiar botones - igual que capturePhoto
@@ -1974,6 +2079,7 @@ function handleMultiplePhotos(event) {
                         // Mostrar botón de enviar incidencia
                         if (elements.sendIncidenceBtn) {
                             elements.sendIncidenceBtn.style.display = 'flex';
+                            syncSendIncidenceBtnLabel();
                         }
                         
                         showStatus(`${files.length} foto(s) adicional(es) añadida(s) a la galería`, 'success');
@@ -2100,6 +2206,18 @@ async function addPhotoToGallery(imageData) {
 const PHOTO_PREVIEW_UPLOAD_HINT_DEFAULT =
     '<i class="fas fa-info-circle"></i> La incidencia se enviará al sistema. Puedes seguir usando la aplicación.';
 
+const SEND_INCIDENCE_BTN_HTML_REPORT =
+    '<i class="fas fa-exclamation-triangle"></i> Enviar Incidencia';
+const SEND_INCIDENCE_BTN_HTML_CLOSE =
+    '<i class="fas fa-check-circle"></i> Cerrar incidencia';
+
+/** Etiqueta del botón principal según flujo: nueva incidencia vs cierre de existente */
+function syncSendIncidenceBtnLabel() {
+    if (!elements.sendIncidenceBtn) return;
+    elements.sendIncidenceBtn.innerHTML =
+        photoMode === 'cerrar' ? SEND_INCIDENCE_BTN_HTML_CLOSE : SEND_INCIDENCE_BTN_HTML_REPORT;
+}
+
 /** En cierre con foto el envío real ocurre al pulsar Enviar: no mostrar el mensaje hasta entonces */
 function syncPhotoPreviewUploadHint() {
     if (!elements.photoPreviewUploadHint) return;
@@ -2109,6 +2227,7 @@ function syncPhotoPreviewUploadHint() {
         elements.photoPreviewUploadHint.style.display = '';
         elements.photoPreviewUploadHint.innerHTML = PHOTO_PREVIEW_UPLOAD_HINT_DEFAULT;
     }
+    syncSendIncidenceBtnLabel();
 }
 
 function showPhotoPreviewUploadHintSending() {
@@ -2702,8 +2821,11 @@ function normalizeEmtFromElement(element) {
         return null;
     }
     const v = element.EMT;
+    const s = String(v).trim().toLowerCase();
     if (v === true || v === 1 || v === '1') return 1;
+    if (s === 'true') return 1;
     if (v === false || v === 0 || v === '0') return 0;
+    if (s === 'false') return 0;
     return null;
 }
 
@@ -2711,12 +2833,11 @@ function normalizeEmtFromElement(element) {
 async function computeAllowedTypesForPickerFromPending() {
     const emtGis = pendingIncidenceData.emtGis;
     if (emtGis === 1) return ['EMT'];
-    if (pendingIncidenceData.isParadaBus && emtGis !== 0) return ['EMT'];
     const res = await fetch('/api/incidence-types');
     const typesData = await res.json();
     if (!typesData.success) return [];
     let incidenceTypes = (typesData.types || []).slice();
-    if (emtGis === 0) incidenceTypes = incidenceTypes.filter(t => t !== 'EMT');
+    if (emtGis !== 1) incidenceTypes = incidenceTypes.filter(t => t !== 'EMT');
     if (pendingIncidenceData.isMobiliario && !pendingIncidenceData.isParadaBus) {
         incidenceTypes = incidenceTypes.filter(type =>
             ['EMT', 'Mobiliario Urbano', 'Vallas'].includes(type));
@@ -2726,7 +2847,7 @@ async function computeAllowedTypesForPickerFromPending() {
 
 async function getIncidencePickerOptionsFromPending() {
     const emtGis = pendingIncidenceData.emtGis;
-    if (emtGis === 1 || (pendingIncidenceData.isParadaBus && emtGis !== 0)) {
+    if (emtGis === 1) {
         return { forcedType: 'EMT', allowedTypes: null };
     }
     const allowedTypes = await computeAllowedTypesForPickerFromPending();
@@ -2814,7 +2935,7 @@ async function loadIncidenceTypesToSelect() {
             aiModalAllSubtypes = INCIDENCE_SUBTYPES_FALLBACK.slice();
             if (elements.aiIncidenceSubType) {
                 elements.aiIncidenceSubType.innerHTML = '';
-                filterSubtypesForIncidenceType('EMT', aiModalAllSubtypes).forEach(s => {
+                filterSubtypesForIncidenceType(INCIDENCE_TYPE_FALLBACK, aiModalAllSubtypes).forEach(s => {
                     const opt = document.createElement('option');
                     opt.value = s;
                     opt.textContent = s;
@@ -2824,41 +2945,36 @@ async function loadIncidenceTypesToSelect() {
                     ? elements.aiIncidenceSubType.options[0].value
                     : 'Mantenimiento';
             }
-            return 'EMT'; // Fallback
+            return INCIDENCE_TYPE_FALLBACK; // Fallback
         }
         
         const emt = pendingIncidenceData.emtGis;
         let types = (typesData.types || []).slice();
         if (emt === 1) {
             types = ['EMT'];
-        } else if (emt === 0) {
+        } else {
             types = types.filter(t => t !== 'EMT');
         }
         if (types.length === 0) {
-            types = emt === 0 ? ['Mobiliario Urbano'] : ['EMT'];
+            types = emt === 1 ? ['EMT'] : [INCIDENCE_TYPE_FALLBACK];
         }
         
+        // En esta pantalla el tipo va fijado por recurso/parada (no editable).
+        const configuredDefaultType = typesData.default_type || INCIDENCE_TYPE_FALLBACK;
+        const fixedType = resolveFixedIncidenceTypeForAi(types, configuredDefaultType);
+
         // Limpiar opciones existentes
         elements.aiIncidenceType.innerHTML = '';
-        
-        // Agregar opciones
-        types.forEach(type => {
-            const option = document.createElement('option');
-            option.value = type;
-            option.textContent = type;
-            elements.aiIncidenceType.appendChild(option);
-        });
-        
-        let defaultType = typesData.default_type || 'EMT';
-        if (!types.includes(defaultType)) defaultType = types[0];
-        elements.aiIncidenceType.value = defaultType;
-        
+        const option = document.createElement('option');
+        option.value = fixedType;
+        option.textContent = fixedType;
+        elements.aiIncidenceType.appendChild(option);
+        elements.aiIncidenceType.value = fixedType;
+        elements.aiIncidenceType.disabled = true;
         if (emt === 1) {
-            elements.aiIncidenceType.disabled = true;
-            elements.aiIncidenceType.title = 'Este elemento solo admite incidencias EMT';
+            elements.aiIncidenceType.title = 'Tipo fijado: este elemento solo admite incidencias EMT';
         } else {
-            elements.aiIncidenceType.disabled = false;
-            elements.aiIncidenceType.title = '';
+            elements.aiIncidenceType.title = 'Tipo fijado automáticamente según recurso/parada';
         }
 
         aiModalAllSubtypes = (typesData.subtypes && typesData.subtypes.length)
@@ -2876,10 +2992,10 @@ async function loadIncidenceTypesToSelect() {
             elements.aiIncidenceSubType.disabled = false;
         }
         
-        return defaultType;
+        return fixedType;
     } catch (error) {
         console.error('❌ Error al cargar tipos de incidencia:', error);
-        return 'EMT'; // Fallback
+        return INCIDENCE_TYPE_FALLBACK; // Fallback
     }
 }
 
@@ -2922,7 +3038,7 @@ function closeAIResultsModal() {
         
         // Limpiar campos
         if (elements.aiIncidenceType) {
-            elements.aiIncidenceType.value = 'EMT';
+            elements.aiIncidenceType.value = INCIDENCE_TYPE_FALLBACK;
             elements.aiIncidenceType.disabled = false;
             elements.aiIncidenceType.title = '';
         }
@@ -3051,7 +3167,7 @@ async function confirmAIResults() {
         let incidenceType = elements.aiIncidenceType ? elements.aiIncidenceType.value : await getDefaultIncidenceType();
         const emt = pendingIncidenceData.emtGis;
         if (emt === 1) incidenceType = 'EMT';
-        if (emt === 0 && incidenceType === 'EMT') {
+        if (emt !== 1 && incidenceType === 'EMT') {
             showStatus('Este elemento no admite incidencias tipo EMT', 'error');
             alert('Este elemento no admite incidencias tipo EMT. Elige otro tipo.');
             return;
@@ -5230,7 +5346,7 @@ async function sendIncidenceFromPreview() {
         }
         const selectedType = pickTs.type;
         const selectedSubType = pickTs.subtype;
-        if (emtGis === 0 && selectedType === 'EMT') {
+        if (emtGis !== 1 && selectedType === 'EMT') {
             showStatus('Este elemento no admite incidencias tipo EMT', 'error');
             return;
         }
@@ -5478,7 +5594,10 @@ function resetUIAfterIncidenceSent() {
     // Ocultar botón de enviar incidencia
     if (elements.sendIncidenceBtn) {
         elements.sendIncidenceBtn.style.display = 'none';
+        elements.sendIncidenceBtn.innerHTML = SEND_INCIDENCE_BTN_HTML_REPORT;
     }
+    photoMode = null;
+    pendingCloseIncidenceData = null;
     
     // Ocultar resultados de QR
     if (elements.qrResults) {
@@ -5672,14 +5791,14 @@ async function getDefaultIncidenceType() {
             cachedDefaultIncidenceType = typesData.default_type;
             return cachedDefaultIncidenceType;
         } else {
-            // Fallback a 'EMT' si hay error
-            console.warn('⚠️ No se pudo obtener el tipo por defecto, usando EMT');
-            return 'EMT';
+            // Fallback si hay error de configuración/servidor
+            console.warn('⚠️ No se pudo obtener el tipo por defecto, usando Mobiliario Urbano');
+            return INCIDENCE_TYPE_FALLBACK;
         }
     } catch (error) {
         console.error('❌ Error al obtener tipo de incidencia por defecto:', error);
-        // Fallback a 'EMT' si hay error
-        return 'EMT';
+        // Fallback si hay error de red
+        return INCIDENCE_TYPE_FALLBACK;
     }
 }
 
@@ -5719,6 +5838,7 @@ function generateTestPhoto() {
     // Mostrar botón de enviar incidencia
     if (elements.sendIncidenceBtn) {
         elements.sendIncidenceBtn.style.display = 'flex';
+        syncSendIncidenceBtnLabel();
     }
     
     showStatus('Foto de prueba generada', 'success');
@@ -6967,6 +7087,7 @@ async function createIncidenceFromElement(elementIndex) {
         
         // Abrir modal de cámara para tomar foto
         photoMode = 'reportar';
+        syncSendIncidenceBtnLabel();
         startPhotoAutoCapture();
         
         showStatus(`Incidencia preparada para: ${elementName}`, 'success');
@@ -6999,7 +7120,7 @@ async function sendEnProgresoAndOpenCloseCamera(inc, resource, options = {}) {
 
     const payloadEnProgreso = {
         state: 'EnProgreso',
-        incidenceType: inc.incidenceType || 'EMT',
+        incidenceType: inc.incidenceType || INCIDENCE_TYPE_FALLBACK,
         incidenceSubType: subClose,
         observation: inc.observation || '',
         description: inc.description || '',
@@ -7030,7 +7151,7 @@ async function sendEnProgresoAndOpenCloseCamera(inc, resource, options = {}) {
         }
         showStatus('Incidencia en progreso. Toma o adjunta una foto para cerrar.', 'success');
     } else {
-        showStatus('Toma o adjunta una foto de cierre. Después pulsa Enviar incidencia.', 'success');
+        showStatus('Toma o adjunta una foto de cierre. Después pulsa Cerrar incidencia.', 'success');
     }
 
     if (closeNearbyModal) {
@@ -7039,7 +7160,7 @@ async function sendEnProgresoAndOpenCloseCamera(inc, resource, options = {}) {
 
     pendingCloseIncidenceData = {
         state: 'Cerrada',
-        incidenceType: inc.incidenceType || 'EMT',
+        incidenceType: inc.incidenceType || INCIDENCE_TYPE_FALLBACK,
         incidenceSubType: subClose,
         observation: inc.observation || '',
         description: inc.description || '',
@@ -7052,6 +7173,7 @@ async function sendEnProgresoAndOpenCloseCamera(inc, resource, options = {}) {
     };
     currentQRData = currentQrOverride != null ? currentQrOverride : resource;
     photoMode = 'cerrar';
+    syncSendIncidenceBtnLabel();
     imagenia = null;
     currentPhotoData = null;
     photoGallery = [];
