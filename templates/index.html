@@ -176,6 +176,14 @@
                         </button>
                     </div>
                 </div>
+                <div class="action-buttons-row action-buttons-row-secondary">
+                    <button id="saveLocalPhotoBtn" class="btn btn-secondary btn-local-action">
+                        <i class="fas fa-camera-retro"></i> Tomar Foto
+                    </button>
+                    <button id="assignPhotoBtn" class="btn btn-primary btn-local-action">
+                        <i class="fas fa-link"></i> Asignar foto
+                    </button>
+                </div>
                 <input type="file" id="multiplePhotosInput" accept="image/*" multiple style="display: none;">
                 <button id="sendIncidenceBtn" class="btn btn-send-incidence" style="display: none;">
                     <i class="fas fa-exclamation-triangle"></i> Enviar Incidencia
@@ -205,6 +213,7 @@
             <div class="photo-counter">
                 <span id="photoCount">0</span> foto(s) añadida(s)
             </div>
+            <p id="assignedLocalPhotoDescription" class="assigned-local-photo-desc" style="display: none;"></p>
             <p id="photoPreviewUploadHint" class="upload-info">
                 <i class="fas fa-info-circle"></i> 
                 La incidencia se enviará al sistema. Puedes seguir usando la aplicación.
@@ -488,18 +497,88 @@
             </div>
         </div>
 
+        <!-- Modal descripción opcional al guardar foto local -->
+        <div id="localPhotoDescModal" class="modal" style="display: none;">
+            <div class="modal-content" style="max-width: 480px;">
+                <div class="modal-header">
+                    <h3><i class="fas fa-align-left"></i> Descripción (opcional)</h3>
+                    <button type="button" class="close-btn" id="closeLocalPhotoDescModal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="local-photo-desc-preview">
+                        <img id="localPhotoDescThumb" alt="Foto capturada">
+                    </div>
+                    <p class="local-photo-desc-help">
+                        Opcional: escribe una descripción o pulsa <strong>Dictar</strong> para hablar (reconocimiento del navegador).
+                    </p>
+                    <textarea id="localPhotoDescText" class="form-input" rows="4"
+                        placeholder="Ej.: cristal roto, farola apagada…"></textarea>
+                    <div class="local-photo-desc-audio-row">
+                        <button type="button" id="localPhotoDescRecordBtn" class="btn btn-secondary">
+                            <i class="fas fa-microphone"></i> <span id="localPhotoDescRecordLabel">Dictar</span>
+                        </button>
+                        <span id="localPhotoDescAudioStatus" class="local-photo-desc-audio-status"></span>
+                    </div>
+                </div>
+                <div class="modal-footer" style="display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap;">
+                    <button type="button" id="skipLocalPhotoDescBtn" class="btn btn-secondary">
+                        Omitir
+                    </button>
+                    <button type="button" id="saveLocalPhotoDescBtn" class="btn btn-success">
+                        <i class="fas fa-check"></i> Guardar
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal de fotos sin asignar -->
+        <div id="assignPhotoModal" class="modal" style="display: none;">
+            <div class="modal-content" style="max-width: 560px;">
+                <div class="modal-header">
+                    <h3><i class="fas fa-images"></i> Fotos sin asignar</h3>
+                    <button class="close-btn" id="closeAssignPhotoModal">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="assign-photo-scope-bar">
+                        <button type="button" id="assignPhotoScopeMineBtn" class="btn-assign-scope is-active">
+                            Solo mías
+                        </button>
+                        <button type="button" id="assignPhotoScopeAllBtn" class="btn-assign-scope">
+                            Todos los usuarios
+                        </button>
+                    </div>
+                    <p id="noUnassignedPhotosMsg" class="assign-photo-empty" style="display: none;">
+                        <i class="fas fa-info-circle"></i> No hay fotos guardadas sin asignar.
+                    </p>
+                    <div id="unassignedPhotosList" class="unassigned-photos-list"></div>
+                </div>
+            </div>
+        </div>
+
         <!-- Modal de Elementos Cercanos -->
         <div id="nearbyElementsModal" class="modal" style="display: none;">
             <div class="modal-content" style="max-width: 95vw; max-height: 95vh; width: 95vw; height: 95vh;">
                 <div class="modal-header">
-                    <h3><i class="fas fa-map-marker-alt"></i> Elementos Cerca (100m)</h3>
-                    <button class="close-btn" id="closeNearbyModal">&times;</button>
+                    <h3 id="nearbyModalTitle"><i class="fas fa-map-marker-alt"></i> Elementos Cerca</h3>
+                    <div class="nearby-modal-header-actions">
+                        <button type="button" id="expandNearbyRadiusBtn" class="btn-expand-radius" title="Ampliar radio de búsqueda" aria-label="Ampliar radio de búsqueda">
+                            <i class="fas fa-search-plus"></i>
+                            <span id="expandNearbyRadiusLabel">Ampliar</span>
+                        </button>
+                        <button class="close-btn" id="closeNearbyModal">&times;</button>
+                    </div>
                 </div>
                 <div class="modal-body" style="height: calc(95vh - 120px); padding: 10px;">
-                    <div id="mapStatus" style="margin-bottom: 10px; padding: 10px; background: #f0f0f0; border-radius: 5px;">
+                    <div id="mapStatus" style="margin-bottom: 8px; padding: 10px; background: #f0f0f0; border-radius: 5px;">
                         <i class="fas fa-spinner fa-spin"></i> Obteniendo ubicación...
                     </div>
-                    <div id="nearbyMap" style="width: 100%; height: calc(100% - 60px); border-radius: 5px; z-index: 1;"></div>
+                    <div id="nearbyLocationHint" class="nearby-location-hint" style="display: none;">
+                        <span id="nearbyLocationHintText"></span>
+                        <button type="button" id="useLastNearbyLocationBtn" class="btn-nearby-hint" style="display: none;">
+                            <i class="fas fa-history"></i> Última ubicación buena
+                        </button>
+                    </div>
+                    <div id="nearbyMap" style="width: 100%; height: calc(100% - 90px); border-radius: 5px; z-index: 1;"></div>
                 </div>
             </div>
         </div>

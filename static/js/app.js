@@ -6,8 +6,12 @@ let currentPhotoData = null; // Mantener para compatibilidad con código existen
 let imagenia = null; // Foto principal capturada/importada con "Reportar Incidencia" - se envía a la IA (única, se sustituye)
 let photoGallery = []; // Array para almacenar fotos adicionales (se envían con la incidencia pero NO a la IA)
 let currentPhotoIndex = 0; // Índice de la foto actual en la galería
-let photoMode = null; // 'reportar', 'añadir' o 'cerrar' - indica desde dónde se abrió el modal de fotos
+let photoMode = null; // 'reportar', 'añadir', 'cerrar' o 'guardar_local'
 let pendingCloseIncidenceData = null; // Datos de incidencia para cerrar (state Cerrada + foto)
+/** ID de foto local seleccionada en "Asignar foto" (antes de elegir elemento) */
+let pendingAssignedLocalPhotoId = null;
+/** ID de foto local usada en incidencia en curso (se marca asignada al enviar) */
+let assignedLocalPhotoIdForIncidence = null;
 let qrDetectionInterval = null; // Para detección automática de QR
 let nfcScanning = false; // Evitar múltiples lecturas simultáneas
 let ndefReader = null; // Lector NFC para poder detenerlo
@@ -38,11 +42,12 @@ let pendingIncidenceData = {
     fullText: null,
     hasAudio: false,
     hasAI: false,
+    hasLocalDescription: false,
     isParadaBus: false,
     isMobiliario: false,
     elementData: null,
     resourceFromUrl: null,  // Parada o recurso llegado por URL (?parada= o ?recurso=) desde app Rutas
-    /** 1 = solo EMT; 0 = EMT no permitido; null = sin restricción (QR, URL sin GIS, etc.) */
+    /** 1 = solo EMT; 0 = EMT no permitido; null = aún sin dato GIS */
     emtGis: null,
     incidenceSubType: null
 };
@@ -158,6 +163,88 @@ function _normalizeResourceCodeForCompare(code) {
     return norm.join('-');
 }
 
+/**
+ * Aplica respuesta de /api/resource-emt a pendingIncidenceData
+ * (mismo criterio EMT que Elementos cerca).
+ */
+function applyEmtGisLookupToPending(data) {
+    if (!data || !data.success || !data.found) return false;
+    const emt = data.emt === 1 ? 1 : (data.emt === 0 ? 0 : null);
+    pendingIncidenceData.emtGis = emt;
+    pendingIncidenceData.elementData = {
+        ...(pendingIncidenceData.elementData || {}),
+        TipoElemento: data.tipoElemento || '',
+        EMT: emt,
+        TipoParada: data.tipoParada || '',
+    };
+    if (data.source === 'mobiliario') {
+        const hasParada = !!(data.tipoParada && String(data.tipoParada).trim());
+        pendingIncidenceData.isMobiliario = true;
+        if (hasParada || pendingIncidenceData.isParadaBus) {
+            pendingIncidenceData.isParadaBus = true;
+        }
+    } else if (data.source === 'recurso') {
+        // Recurso publicitario: no forzar parada/mobiliario
+        pendingIncidenceData.isParadaBus = false;
+        pendingIncidenceData.isMobiliario = false;
+    }
+    return true;
+}
+
+/**
+ * Si aún no hay emtGis, lo resuelve como en el mapa (GIS Recursos/Mobiliario).
+ * Cubre URL ?recurso/?parada, QR con código recurso, etc.
+ */
+async function ensureEmtGisFromPendingContext() {
+    if (pendingIncidenceData.emtGis === 0 || pendingIncidenceData.emtGis === 1) {
+        return pendingIncidenceData.emtGis;
+    }
+    if (pendingIncidenceData.elementData) {
+        const fromEl = normalizeEmtFromElement(pendingIncidenceData.elementData);
+        if (fromEl === 0 || fromEl === 1) {
+            pendingIncidenceData.emtGis = fromEl;
+            return fromEl;
+        }
+    }
+
+    let parada = null;
+    let resource = null;
+    if (pendingIncidenceData.isParadaBus && pendingIncidenceData.stopNumber) {
+        parada = String(pendingIncidenceData.stopNumber).replace(/^PARADA_/i, '').trim();
+    } else if (pendingIncidenceData.resourceFromUrl) {
+        resource = String(pendingIncidenceData.resourceFromUrl).trim();
+    } else if (pendingIncidenceData.stopNumber) {
+        const sn = String(pendingIncidenceData.stopNumber).trim();
+        if (sn.includes('-')) resource = sn;
+        else parada = sn.replace(/^PARADA_/i, '').trim();
+    } else if (currentQRData) {
+        const qr = String(currentQRData).trim();
+        if (qr.includes('-')) resource = qr;
+    }
+
+    if (!parada && !resource) return pendingIncidenceData.emtGis;
+
+    try {
+        const params = new URLSearchParams();
+        if (parada) params.set('parada', parada);
+        else params.set('resource', resource);
+        const res = await fetch('/api/resource-emt?' + params.toString(), {
+            headers: { 'X-Device-ID': deviceId }
+        });
+        const data = await res.json().catch(() => ({}));
+        if (applyEmtGisLookupToPending(data)) {
+            console.log('📌 EMT GIS unificado:', {
+                emtGis: pendingIncidenceData.emtGis,
+                source: data.source,
+                resource: data.resource
+            });
+        }
+    } catch (e) {
+        console.warn('⚠️ No se pudo resolver EMT GIS del contexto:', e);
+    }
+    return pendingIncidenceData.emtGis;
+}
+
 async function refreshAiTypeFromStopOrResourceInput() {
     if (!elements.aiStopNumber) return;
     const raw = String(elements.aiStopNumber.value || '').trim();
@@ -176,14 +263,7 @@ async function refreshAiTypeFromStopOrResourceInput() {
         const typedNorm = _normalizeResourceCodeForCompare(raw);
         const matchedNorm = _normalizeResourceCodeForCompare(data.resource || '');
         if (data.found && matchedNorm && typedNorm === matchedNorm) {
-            const emt = data.emt === 1 ? 1 : (data.emt === 0 ? 0 : null);
-            pendingIncidenceData.emtGis = emt;
-            pendingIncidenceData.isParadaBus = false;
-            pendingIncidenceData.isMobiliario = false;
-            pendingIncidenceData.elementData = {
-                ...(pendingIncidenceData.elementData || {}),
-                TipoElemento: data.tipoElemento || '',
-            };
+            applyEmtGisLookupToPending(data);
             await loadIncidenceTypesToSelect();
         }
     } catch (e) {
@@ -540,9 +620,35 @@ document.addEventListener('DOMContentLoaded', function() {
         // Elementos del modal de elementos cercanos
         nearbyElementsBtn: document.getElementById('nearbyElementsBtn'),
         nearbyElementsModal: document.getElementById('nearbyElementsModal'),
+        nearbyModalTitle: document.getElementById('nearbyModalTitle'),
+        expandNearbyRadiusBtn: document.getElementById('expandNearbyRadiusBtn'),
+        expandNearbyRadiusLabel: document.getElementById('expandNearbyRadiusLabel'),
         closeNearbyModal: document.getElementById('closeNearbyModal'),
         nearbyMap: document.getElementById('nearbyMap'),
         mapStatus: document.getElementById('mapStatus'),
+        nearbyLocationHint: document.getElementById('nearbyLocationHint'),
+        nearbyLocationHintText: document.getElementById('nearbyLocationHintText'),
+        useLastNearbyLocationBtn: document.getElementById('useLastNearbyLocationBtn'),
+
+        saveLocalPhotoBtn: document.getElementById('saveLocalPhotoBtn'),
+        assignPhotoBtn: document.getElementById('assignPhotoBtn'),
+        assignPhotoModal: document.getElementById('assignPhotoModal'),
+        closeAssignPhotoModal: document.getElementById('closeAssignPhotoModal'),
+        unassignedPhotosList: document.getElementById('unassignedPhotosList'),
+        noUnassignedPhotosMsg: document.getElementById('noUnassignedPhotosMsg'),
+        assignPhotoScopeMineBtn: document.getElementById('assignPhotoScopeMineBtn'),
+        assignPhotoScopeAllBtn: document.getElementById('assignPhotoScopeAllBtn'),
+        assignedLocalPhotoDescription: document.getElementById('assignedLocalPhotoDescription'),
+
+        localPhotoDescModal: document.getElementById('localPhotoDescModal'),
+        closeLocalPhotoDescModal: document.getElementById('closeLocalPhotoDescModal'),
+        localPhotoDescThumb: document.getElementById('localPhotoDescThumb'),
+        localPhotoDescText: document.getElementById('localPhotoDescText'),
+        localPhotoDescRecordBtn: document.getElementById('localPhotoDescRecordBtn'),
+        localPhotoDescRecordLabel: document.getElementById('localPhotoDescRecordLabel'),
+        localPhotoDescAudioStatus: document.getElementById('localPhotoDescAudioStatus'),
+        skipLocalPhotoDescBtn: document.getElementById('skipLocalPhotoDescBtn'),
+        saveLocalPhotoDescBtn: document.getElementById('saveLocalPhotoDescBtn'),
 
         assignedIncidenceModal: document.getElementById('assignedIncidenceModal'),
         assignedIncidenceModalTitle: document.getElementById('assignedIncidenceModalTitle'),
@@ -645,7 +751,7 @@ function handleActionFromURL() {
             pendingIncidenceData.resourceFromUrl = null;
             pendingIncidenceData.isParadaBus = true;
             pendingIncidenceData.elementData = null;
-            pendingIncidenceData.isMobiliario = false;
+            pendingIncidenceData.isMobiliario = true;
             pendingIncidenceData.emtGis = null;
             console.log('📌 Parada desde URL:', id);
         }
@@ -673,6 +779,10 @@ function handleActionFromURL() {
         imagenia = null;
         currentPhotoData = null;
         photoGallery = [];
+        // Mismo criterio EMT que Elementos cerca (GIS)
+        ensureEmtGisFromPendingContext().catch((e) => {
+            console.warn('⚠️ EMT GIS desde URL no disponible aún:', e);
+        });
         startPhotoAutoCapture();
         if (typeof history !== 'undefined' && history.replaceState) {
             const urlSinParams = window.location.pathname + window.location.hash;
@@ -1038,14 +1148,93 @@ function initializeEventListeners() {
     if (elements.nearbyElementsBtn) {
         elements.nearbyElementsBtn.addEventListener('click', () => {
             if (!ensureAuthenticatedForAction('nearby')) return;
-            stopNFCScanning(); // Detener NFC al pulsar elementos cerca
+            stopNFCScanning();
             showNearbyElements();
+        });
+    }
+
+    if (elements.saveLocalPhotoBtn) {
+        elements.saveLocalPhotoBtn.addEventListener('click', () => {
+            if (!ensureAuthenticatedForAction('save_local_photo')) return;
+            stopNFCScanning();
+            photoMode = 'guardar_local';
+            startPhotoAutoCapture();
+        });
+    }
+
+    if (elements.assignPhotoBtn) {
+        elements.assignPhotoBtn.addEventListener('click', () => {
+            if (!ensureAuthenticatedForAction('assign_photo')) return;
+            stopNFCScanning();
+            openAssignPhotoModal();
+        });
+    }
+
+    if (elements.closeAssignPhotoModal) {
+        elements.closeAssignPhotoModal.addEventListener('click', closeAssignPhotoModal);
+    }
+    if (elements.assignPhotoModal) {
+        elements.assignPhotoModal.addEventListener('click', (event) => {
+            if (event.target === elements.assignPhotoModal) {
+                closeAssignPhotoModal();
+            }
+        });
+    }
+    if (elements.assignPhotoScopeMineBtn) {
+        elements.assignPhotoScopeMineBtn.addEventListener('click', async () => {
+            assignPhotoScope = 'mine';
+            syncAssignPhotoScopeButtons();
+            await refreshAssignPhotoList();
+        });
+    }
+    if (elements.assignPhotoScopeAllBtn) {
+        elements.assignPhotoScopeAllBtn.addEventListener('click', async () => {
+            assignPhotoScope = 'all';
+            syncAssignPhotoScopeButtons();
+            await refreshAssignPhotoList();
+        });
+    }
+
+    if (elements.closeLocalPhotoDescModal) {
+        elements.closeLocalPhotoDescModal.addEventListener('click', () => finishLocalPhotoDescription(''));
+    }
+    if (elements.skipLocalPhotoDescBtn) {
+        elements.skipLocalPhotoDescBtn.addEventListener('click', () => finishLocalPhotoDescription(''));
+    }
+    if (elements.saveLocalPhotoDescBtn) {
+        elements.saveLocalPhotoDescBtn.addEventListener('click', () => {
+            const text = elements.localPhotoDescText
+                ? elements.localPhotoDescText.value.trim()
+                : '';
+            finishLocalPhotoDescription(text);
+        });
+    }
+    if (elements.localPhotoDescRecordBtn) {
+        elements.localPhotoDescRecordBtn.addEventListener('click', toggleLocalPhotoDescRecording);
+    }
+    if (elements.localPhotoDescModal) {
+        elements.localPhotoDescModal.addEventListener('click', (event) => {
+            if (event.target === elements.localPhotoDescModal) {
+                finishLocalPhotoDescription(
+                    elements.localPhotoDescText ? elements.localPhotoDescText.value.trim() : ''
+                );
+            }
         });
     }
     
     // Cerrar modal de elementos cercanos
     if (elements.closeNearbyModal) {
         elements.closeNearbyModal.addEventListener('click', closeNearbyElementsModal);
+    }
+    if (elements.expandNearbyRadiusBtn) {
+        elements.expandNearbyRadiusBtn.addEventListener('click', () => {
+            expandNearbySearchRadius();
+        });
+    }
+    if (elements.useLastNearbyLocationBtn) {
+        elements.useLastNearbyLocationBtn.addEventListener('click', () => {
+            useLastGoodNearbyLocation();
+        });
     }
     
     // Cerrar modal de elementos cercanos haciendo clic fuera
@@ -1675,6 +1864,14 @@ async function capturePhoto() {
         
         // Limpiar la orientación capturada después de usarla
         capturedOrientation = null;
+
+        if (photoMode === 'guardar_local') {
+            await persistLocalPhotoFromCapture(imageData);
+            stopPhotoCamera();
+            closePhotoModal();
+            photoMode = null;
+            return;
+        }
         
         // Verificar el modo: 'reportar', 'cerrar' o 'añadir'
         if (photoMode === 'reportar' || photoMode === 'cerrar') {
@@ -1863,8 +2060,18 @@ function handlePhotoImport(event) {
             
             // Aviso provisional de EXIF eliminado: ya no mostramos EXIF ni alertas al importar
             
-            reader.onload = function(e) {
+            reader.onload = async function(e) {
                 const imageData = e.target.result;
+
+                if (photoMode === 'guardar_local') {
+                    if (index === 0) {
+                        await persistLocalPhotoFromCapture(imageData);
+                        stopPhotoCamera();
+                        closePhotoModal();
+                        photoMode = null;
+                    }
+                    return;
+                }
                 
                 // Verificar el modo: 'reportar', 'cerrar' o 'añadir'
                 if (photoMode === 'reportar' || photoMode === 'cerrar') {
@@ -3009,6 +3216,7 @@ function normalizeEmtFromElement(element) {
 
 /** Tipos permitidos en el picker según GIS / mobiliario (misma lógica que envío desde preview) */
 async function computeAllowedTypesForPickerFromPending() {
+    await ensureEmtGisFromPendingContext();
     const emtGis = pendingIncidenceData.emtGis;
     if (emtGis === 1) return ['EMT'];
     const res = await fetch('/api/incidence-types');
@@ -3024,6 +3232,7 @@ async function computeAllowedTypesForPickerFromPending() {
 }
 
 async function getIncidencePickerOptionsFromPending() {
+    await ensureEmtGisFromPendingContext();
     const emtGis = pendingIncidenceData.emtGis;
     if (emtGis === 1) {
         return { forcedType: 'EMT', allowedTypes: null };
@@ -3105,6 +3314,7 @@ async function resolveIncidenceSubtypeForPayload() {
 // Función para cargar tipos de incidencia en el select
 async function loadIncidenceTypesToSelect() {
     try {
+        await ensureEmtGisFromPendingContext();
         const typesResponse = await fetch('/api/incidence-types');
         const typesData = await typesResponse.json();
         
@@ -3342,6 +3552,7 @@ async function handleManualEntry() {
 // Confirmar resultados de IA y enviar incidencia
 async function confirmAIResults() {
     try {
+        await ensureEmtGisFromPendingContext();
         let incidenceType = elements.aiIncidenceType ? elements.aiIncidenceType.value : await getDefaultIncidenceType();
         const emt = pendingIncidenceData.emtGis;
         if (emt === 1) incidenceType = 'EMT';
@@ -5455,6 +5666,7 @@ async function sendIncidenceFromPreview() {
             }
         }
         
+        await ensureEmtGisFromPendingContext();
         const emtGis = pendingIncidenceData.emtGis;
         const pickTs = await openIncidenceTypeSubtypePicker({});
         if (!pickTs) {
@@ -5469,20 +5681,25 @@ async function sendIncidenceFromPreview() {
         }
         pendingIncidenceData.incidenceSubType = selectedSubType;
 
-        // Mostrar prompt con descripción pre-rellenada si está disponible (audio o IA)
+        // Mostrar prompt con descripción pre-rellenada si está disponible
         let description;
+        const prefillDescription = (pendingIncidenceData && pendingIncidenceData.description)
+            ? String(pendingIncidenceData.description).trim()
+            : '';
+
         if (hasAudioData && pendingIncidenceData.description) {
-            // Pre-rellenar con la descripción del audio para que el usuario pueda modificarla
-            parada_bus=prompt('Ingresa el número de parada:',pendingIncidenceData.stopNumber);
-            pendingIncidenceData.stopNumber=parada_bus;
-            description = prompt('Describe la incidencia:', pendingIncidenceData.description);
+            parada_bus = prompt('Ingresa el número de parada:', pendingIncidenceData.stopNumber);
+            pendingIncidenceData.stopNumber = parada_bus;
+            description = prompt('Describe la incidencia:', prefillDescription);
             console.log('🎤 Descripción del audio pre-rellenada:', pendingIncidenceData.description);
         } else if (hasAIData && pendingIncidenceData.description) {
-            // Pre-rellenar con la descripción de la IA para que el usuario pueda modificarla
-            parada_bus=prompt('Ingresa el número de parada:',pendingIncidenceData.stopNumber);
-            pendingIncidenceData.stopNumber=parada_bus;
-            description = prompt('Describe la incidencia:', pendingIncidenceData.description);
+            parada_bus = prompt('Ingresa el número de parada:', pendingIncidenceData.stopNumber);
+            pendingIncidenceData.stopNumber = parada_bus;
+            description = prompt('Describe la incidencia:', prefillDescription);
             console.log('🤖 Descripción de la IA pre-rellenada:', pendingIncidenceData.description);
+        } else if (prefillDescription) {
+            description = prompt('Describe la incidencia:', prefillDescription);
+            console.log('📷 Descripción de foto local pre-rellenada:', prefillDescription);
         } else {
             description = prompt('Describe la incidencia:');
         }
@@ -5530,7 +5747,9 @@ async function sendIncidenceFromPreview() {
             state: 'PENDING',
             incidenceType: selectedType,
             incidenceSubType: selectedSubType,
-            observation: (pendingIncidenceData.hasAudio || pendingIncidenceData.hasAI) ? pendingIncidenceData.fullText : '',
+            observation: (pendingIncidenceData.hasAudio || pendingIncidenceData.hasAI || pendingIncidenceData.hasLocalDescription)
+                ? pendingIncidenceData.fullText
+                : '',
             description: description.trim(),
             resource: resource,
             image: images,
@@ -5637,6 +5856,12 @@ function stopPhotoCamera() {
 // Función para limpiar completamente la pantalla después de enviar una incidencia
 function resetUIAfterIncidenceSent() {
     console.log('🧹 Limpiando UI después de enviar incidencia...');
+
+    if (assignedLocalPhotoIdForIncidence) {
+        const photoId = assignedLocalPhotoIdForIncidence;
+        assignedLocalPhotoIdForIncidence = null;
+        deletePendingPhotoAfterIncidenceSent(photoId);
+    }
     
     // Limpiar datos globales
     currentPhotoData = null;
@@ -5650,6 +5875,7 @@ function resetUIAfterIncidenceSent() {
         fullText: null,
         hasAudio: false,
         hasAI: false,
+        hasLocalDescription: false,
         isParadaBus: false,
         isMobiliario: false,
         elementData: null,
@@ -5694,6 +5920,7 @@ function resetUIAfterIncidenceSent() {
         elements.photoPreviewUploadHint.style.display = '';
         elements.photoPreviewUploadHint.innerHTML = PHOTO_PREVIEW_UPLOAD_HINT_DEFAULT;
     }
+    setAssignedLocalPhotoDescriptionVisible('');
     
     // Ocultar botones de navegación de la galería
     if (elements.prevPhotoBtn) {
@@ -6289,6 +6516,12 @@ function ensureAuthenticatedForAction(actionName = '') {
         case 'send_incidence':
             actionText = 'enviar la incidencia';
             break;
+        case 'save_local_photo':
+            actionText = 'guardar fotos localmente';
+            break;
+        case 'assign_photo':
+            actionText = 'asignar fotos guardadas';
+            break;
     }
     
     showStatus(`Debes iniciar sesión para ${actionText}.`, 'error');
@@ -6706,146 +6939,1104 @@ document.addEventListener('keydown', function(e) {
         if (elements.nearbyElementsModal && elements.nearbyElementsModal.style.display === 'block') {
             closeNearbyElementsModal();
         }
+        if (elements.assignPhotoModal && elements.assignPhotoModal.style.display === 'block') {
+            closeAssignPhotoModal();
+        }
     }
 });
+
+// ========================================
+// FOTOS PENDIENTES (servidor) — Tomar Foto / Asignar foto
+// ========================================
+
+let assignPhotoScope = 'mine'; // 'mine' | 'all'
+let assignPhotoCache = [];
+
+function pendingPhotoImageSrc(photo) {
+    const base = photo.imageUrl || `/api/pending-photos/${photo.id}/image`;
+    const sep = base.includes('?') ? '&' : '?';
+    return `${base}${sep}device_id=${encodeURIComponent(deviceId || '')}`;
+}
+
+function formatLocalPhotoDate(iso) {
+    if (!iso) return '';
+    try {
+        return new Date(iso).toLocaleString('es-ES', {
+            day: '2-digit', month: '2-digit', year: 'numeric',
+            hour: '2-digit', minute: '2-digit'
+        });
+    } catch (e) {
+        return iso;
+    }
+}
+
+async function fetchPendingPhotos(scope) {
+    const response = await fetch(`/api/pending-photos?scope=${encodeURIComponent(scope || 'mine')}`, {
+        headers: { 'X-Device-ID': deviceId }
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!result.success) {
+        throw new Error(result.error || 'Error al listar fotos pendientes');
+    }
+    return result.photos || [];
+}
+
+async function uploadPendingPhotoToServer(payload) {
+    const response = await fetch('/api/pending-photos', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-Device-ID': deviceId
+        },
+        body: JSON.stringify(payload)
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!result.success) {
+        throw new Error(result.error || 'Error al guardar la foto en el servidor');
+    }
+    return result.photo;
+}
+
+async function getLocalPhotoById(id) {
+    const response = await fetch(`/api/pending-photos/${encodeURIComponent(id)}/data`, {
+        headers: { 'X-Device-ID': deviceId }
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!result.success || !result.photo) {
+        throw new Error(result.error || 'No se encontró la foto');
+    }
+    return result.photo;
+}
+
+async function deleteLocalPhoto(id) {
+    const response = await fetch(`/api/pending-photos/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { 'X-Device-ID': deviceId }
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!result.success && response.status !== 404) {
+        throw new Error(result.error || 'Error al eliminar la foto');
+    }
+}
+
+/** Tras enviar incidencia: borrar del servidor (ya no “marcar asignada”). */
+async function deletePendingPhotoAfterIncidenceSent(id) {
+    try {
+        await deleteLocalPhoto(id);
+        console.log('🗑️ Foto pendiente eliminada del servidor:', id);
+    } catch (e) {
+        console.warn('No se pudo eliminar foto pendiente:', e);
+    }
+}
+
+async function persistLocalPhotoFromCapture(imageData) {
+    showStatus('Obteniendo ubicación...', 'info');
+    let position = null;
+    try {
+        position = await getCurrentPosition();
+    } catch (e) {
+        console.warn('Geolocalización no disponible al guardar foto:', e);
+    }
+
+    const base64 = typeof imageData === 'string'
+        ? imageData
+        : (imageData && imageData.base64) || '';
+
+    if (!base64) {
+        showStatus('No se pudo leer la imagen capturada', 'error');
+        return;
+    }
+
+    const description = await askLocalPhotoDescription(base64);
+
+    showStatus('Guardando foto en el servidor...', 'info');
+    try {
+        await uploadPendingPhotoToServer({
+            image: base64,
+            latitude: position ? position.latitude : null,
+            longitude: position ? position.longitude : null,
+            accuracy: position ? position.accuracy : null,
+            description: description || '',
+            filename: `local_${Date.now()}.jpg`
+        });
+    } catch (e) {
+        console.error(e);
+        showStatus(e.message || 'Error al guardar la foto en el servidor', 'error');
+        return;
+    }
+
+    if (position && !isNearbyAccuracyPoor(position.accuracy)) {
+        saveLastGoodNearbyLocation(position.latitude, position.longitude, position.accuracy);
+    }
+
+    if (position) {
+        showStatus(
+            description
+                ? 'Foto guardada en el servidor (con descripción y ubicación)'
+                : `Foto guardada en el servidor (${position.latitude.toFixed(5)}, ${position.longitude.toFixed(5)})`,
+            'success'
+        );
+    } else {
+        showStatus(
+            description
+                ? 'Foto guardada en el servidor (con descripción, sin GPS)'
+                : 'Foto guardada en el servidor (sin geolocalización)',
+            description ? 'success' : 'warning'
+        );
+    }
+}
+
+/** Estado del modal de descripción al guardar foto local */
+let _localPhotoDescResolve = null;
+let _localPhotoDescSpeech = null;
+let _localPhotoDescListening = false;
+
+function askLocalPhotoDescription(base64Preview) {
+    return new Promise((resolve) => {
+        if (!elements.localPhotoDescModal) {
+            resolve('');
+            return;
+        }
+        _localPhotoDescResolve = resolve;
+        if (elements.localPhotoDescThumb) {
+            elements.localPhotoDescThumb.src = base64Preview;
+        }
+        if (elements.localPhotoDescText) {
+            elements.localPhotoDescText.value = '';
+        }
+        setLocalPhotoDescAudioStatus('');
+        setLocalPhotoDescRecordUi(false);
+        elements.localPhotoDescModal.style.display = 'block';
+        if (elements.localPhotoDescText) {
+            setTimeout(() => elements.localPhotoDescText.focus(), 100);
+        }
+    });
+}
+
+function finishLocalPhotoDescription(text) {
+    stopLocalPhotoDescSpeech();
+    if (elements.localPhotoDescModal) {
+        elements.localPhotoDescModal.style.display = 'none';
+    }
+    const resolve = _localPhotoDescResolve;
+    _localPhotoDescResolve = null;
+    if (resolve) {
+        resolve(String(text || '').trim());
+    }
+}
+
+function setLocalPhotoDescAudioStatus(msg) {
+    if (elements.localPhotoDescAudioStatus) {
+        elements.localPhotoDescAudioStatus.textContent = msg || '';
+    }
+}
+
+function setLocalPhotoDescRecordUi(listening) {
+    _localPhotoDescListening = !!listening;
+    if (elements.localPhotoDescRecordLabel) {
+        elements.localPhotoDescRecordLabel.textContent = listening ? 'Detener' : 'Dictar';
+    }
+    if (elements.localPhotoDescRecordBtn) {
+        elements.localPhotoDescRecordBtn.classList.toggle('btn-danger', listening);
+        elements.localPhotoDescRecordBtn.classList.toggle('btn-secondary', !listening);
+        const icon = elements.localPhotoDescRecordBtn.querySelector('i');
+        if (icon) {
+            icon.className = listening ? 'fas fa-stop' : 'fas fa-microphone';
+        }
+    }
+}
+
+function stopLocalPhotoDescSpeech() {
+    if (_localPhotoDescSpeech) {
+        try {
+            _localPhotoDescSpeech.onend = null;
+            _localPhotoDescSpeech.onerror = null;
+            _localPhotoDescSpeech.onresult = null;
+            _localPhotoDescSpeech.stop();
+        } catch (e) {
+            /* ignore */
+        }
+        _localPhotoDescSpeech = null;
+    }
+    setLocalPhotoDescRecordUi(false);
+}
+
+function toggleLocalPhotoDescRecording() {
+    if (_localPhotoDescListening) {
+        stopLocalPhotoDescSpeech();
+        setLocalPhotoDescAudioStatus('Escucha detenida');
+        return;
+    }
+    startLocalPhotoDescSpeech();
+}
+
+function startLocalPhotoDescSpeech() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+        showStatus(
+            'Este navegador no soporta dictado por voz. Escribe la descripción o usa Chrome/Edge.',
+            'warning'
+        );
+        return;
+    }
+
+    stopLocalPhotoDescSpeech();
+
+    try {
+        const rec = new SpeechRecognition();
+        _localPhotoDescSpeech = rec;
+        rec.lang = 'es-ES';
+        rec.continuous = false;
+        rec.interimResults = true;
+        rec.maxAlternatives = 1;
+
+        rec.onstart = () => {
+            setLocalPhotoDescRecordUi(true);
+            setLocalPhotoDescAudioStatus('Escuchando… habla ahora');
+        };
+
+        rec.onresult = (event) => {
+            let interim = '';
+            let finalText = '';
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                const t = event.results[i][0].transcript;
+                if (event.results[i].isFinal) {
+                    finalText += t;
+                } else {
+                    interim += t;
+                }
+            }
+            if (finalText && elements.localPhotoDescText) {
+                const prev = elements.localPhotoDescText.value.trim();
+                elements.localPhotoDescText.value = prev
+                    ? `${prev} ${finalText.trim()}`.trim()
+                    : finalText.trim();
+                setLocalPhotoDescAudioStatus('Texto añadido desde audio');
+            } else if (interim) {
+                setLocalPhotoDescAudioStatus(`Escuchando… ${interim}`);
+            }
+        };
+
+        rec.onerror = (event) => {
+            console.warn('SpeechRecognition error:', event.error);
+            const msg = event.error === 'not-allowed'
+                ? 'Permiso de micrófono denegado'
+                : (event.error === 'no-speech'
+                    ? 'No se detectó voz. Prueba otra vez.'
+                    : `Error de voz: ${event.error}`);
+            setLocalPhotoDescAudioStatus(msg);
+            setLocalPhotoDescRecordUi(false);
+            _localPhotoDescSpeech = null;
+        };
+
+        rec.onend = () => {
+            setLocalPhotoDescRecordUi(false);
+            _localPhotoDescSpeech = null;
+            if (elements.localPhotoDescAudioStatus &&
+                elements.localPhotoDescAudioStatus.textContent.indexOf('Escuchando') === 0) {
+                setLocalPhotoDescAudioStatus('Listo');
+            }
+        };
+
+        rec.start();
+    } catch (e) {
+        console.error('Error al iniciar dictado:', e);
+        showStatus('No se pudo iniciar el micrófono: ' + e.message, 'error');
+        setLocalPhotoDescRecordUi(false);
+        setLocalPhotoDescAudioStatus('');
+    }
+}
+
+function closeAssignPhotoModal() {
+    if (elements.assignPhotoModal) {
+        elements.assignPhotoModal.style.display = 'none';
+    }
+}
+
+function syncAssignPhotoScopeButtons() {
+    if (elements.assignPhotoScopeMineBtn) {
+        elements.assignPhotoScopeMineBtn.classList.toggle('is-active', assignPhotoScope === 'mine');
+    }
+    if (elements.assignPhotoScopeAllBtn) {
+        elements.assignPhotoScopeAllBtn.classList.toggle('is-active', assignPhotoScope === 'all');
+    }
+}
+
+async function openAssignPhotoModal() {
+    if (!elements.assignPhotoModal) return;
+    assignPhotoScope = 'mine';
+    syncAssignPhotoScopeButtons();
+    elements.assignPhotoModal.style.display = 'block';
+    await refreshAssignPhotoList();
+}
+
+async function refreshAssignPhotoList() {
+    try {
+        if (elements.noUnassignedPhotosMsg) {
+            elements.noUnassignedPhotosMsg.style.display = 'none';
+        }
+        if (elements.unassignedPhotosList) {
+            elements.unassignedPhotosList.innerHTML =
+                '<p style="text-align:center;color:#666;padding:16px;"><i class="fas fa-spinner fa-spin"></i> Cargando…</p>';
+        }
+        assignPhotoCache = await fetchPendingPhotos(assignPhotoScope);
+        renderUnassignedPhotosList(assignPhotoCache, assignPhotoScope);
+    } catch (e) {
+        console.error('Error al abrir fotos sin asignar:', e);
+        showStatus('Error al cargar fotos: ' + e.message, 'error');
+        if (elements.unassignedPhotosList) {
+            elements.unassignedPhotosList.innerHTML = '';
+        }
+        if (elements.noUnassignedPhotosMsg) {
+            elements.noUnassignedPhotosMsg.style.display = 'block';
+            elements.noUnassignedPhotosMsg.innerHTML =
+                `<i class="fas fa-exclamation-triangle"></i> ${escapeHtmlBasic(e.message || 'Error')}`;
+        }
+    }
+}
+
+function createPendingPhotoListItem(photo) {
+    const item = document.createElement('div');
+    item.className = 'unassigned-photo-item';
+    item.dataset.photoId = photo.id;
+
+    const img = document.createElement('img');
+    img.src = pendingPhotoImageSrc(photo);
+    img.alt = 'Foto sin asignar';
+
+    const meta = document.createElement('div');
+    meta.className = 'unassigned-photo-meta';
+    const hasGeo = photo.latitude != null && photo.longitude != null;
+    const desc = (photo.description && String(photo.description).trim()) || '';
+    const descHtml = desc
+        ? `<span class="unassigned-photo-desc">${escapeHtmlBasic(desc)}</span>`
+        : '';
+    meta.innerHTML = hasGeo
+        ? `<strong>${formatLocalPhotoDate(photo.createdAt)}</strong><br>
+           <small><i class="fas fa-map-marker-alt"></i> ${Number(photo.latitude).toFixed(5)}, ${Number(photo.longitude).toFixed(5)}</small>
+           ${descHtml}`
+        : `<strong>${formatLocalPhotoDate(photo.createdAt)}</strong><br>
+           <small>Sin ubicación GPS</small>
+           ${descHtml}`;
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.className = 'unassigned-photo-delete';
+    delBtn.title = 'Eliminar foto';
+    delBtn.innerHTML = '<i class="fas fa-trash"></i>';
+    delBtn.addEventListener('click', async (ev) => {
+        ev.stopPropagation();
+        if (!confirm('¿Eliminar esta foto del servidor?')) return;
+        try {
+            await deleteLocalPhoto(photo.id);
+            showStatus('Foto eliminada', 'info');
+            await refreshAssignPhotoList();
+        } catch (e) {
+            showStatus(e.message || 'Error al eliminar', 'error');
+        }
+    });
+
+    item.appendChild(img);
+    item.appendChild(meta);
+    item.appendChild(delBtn);
+    item.addEventListener('click', () => selectUnassignedPhotoForAssign(photo.id));
+    return item;
+}
+
+function renderUnassignedPhotosList(photos, scope) {
+    if (!elements.unassignedPhotosList) return;
+
+    const list = photos || [];
+    if (elements.noUnassignedPhotosMsg) {
+        elements.noUnassignedPhotosMsg.style.display = list.length ? 'none' : 'block';
+        elements.noUnassignedPhotosMsg.innerHTML = list.length
+            ? ''
+            : '<i class="fas fa-info-circle"></i> No hay fotos guardadas sin asignar.';
+    }
+    elements.unassignedPhotosList.innerHTML = '';
+
+    if (!list.length) return;
+
+    if (scope === 'all') {
+        const byUser = {};
+        list.forEach((p) => {
+            const key = String(p.user_id || p.username || 'unknown');
+            if (!byUser[key]) {
+                byUser[key] = {
+                    user_id: p.user_id,
+                    username: p.username || 'Usuario',
+                    photos: []
+                };
+            }
+            byUser[key].photos.push(p);
+        });
+
+        Object.values(byUser)
+            .sort((a, b) => a.username.localeCompare(b.username, 'es'))
+            .forEach((group) => {
+                const wrap = document.createElement('div');
+                wrap.className = 'pending-photo-user-group';
+
+                const header = document.createElement('button');
+                header.type = 'button';
+                header.className = 'pending-photo-user-header';
+                header.innerHTML =
+                    `<span><i class="fas fa-user"></i> ${escapeHtmlBasic(group.username)} ` +
+                    `<small>(${group.photos.length})</small></span>` +
+                    `<i class="fas fa-chevron-right pending-photo-chevron"></i>`;
+                header.addEventListener('click', () => {
+                    wrap.classList.toggle('is-open');
+                });
+
+                const body = document.createElement('div');
+                body.className = 'pending-photo-user-body';
+                group.photos.forEach((photo) => {
+                    body.appendChild(createPendingPhotoListItem(photo));
+                });
+
+                wrap.appendChild(header);
+                wrap.appendChild(body);
+                elements.unassignedPhotosList.appendChild(wrap);
+            });
+        return;
+    }
+
+    list.forEach((photo) => {
+        elements.unassignedPhotosList.appendChild(createPendingPhotoListItem(photo));
+    });
+}
+
+function escapeHtmlBasic(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function setAssignedLocalPhotoDescriptionVisible(text) {
+    if (!elements.assignedLocalPhotoDescription) return;
+    const t = (text && String(text).trim()) || '';
+    if (!t) {
+        elements.assignedLocalPhotoDescription.style.display = 'none';
+        elements.assignedLocalPhotoDescription.textContent = '';
+        return;
+    }
+    elements.assignedLocalPhotoDescription.style.display = 'block';
+    elements.assignedLocalPhotoDescription.innerHTML =
+        `<i class="fas fa-align-left"></i> <strong>Descripción:</strong> ${escapeHtmlBasic(t)}`;
+}
+
+async function selectUnassignedPhotoForAssign(photoId) {
+    let photo;
+    try {
+        photo = await getLocalPhotoById(photoId);
+    } catch (e) {
+        showStatus(e.message || 'La foto ya no está disponible', 'warning');
+        return;
+    }
+    if (!photo || !photo.base64) {
+        showStatus('La foto ya no está disponible', 'warning');
+        return;
+    }
+    if (photo.latitude == null || photo.longitude == null) {
+        showStatus('Esta foto no tiene geolocalización. No se pueden buscar elementos cerca.', 'error');
+        return;
+    }
+
+    pendingAssignedLocalPhotoId = photoId;
+    closeAssignPhotoModal();
+
+    await showNearbyElements({
+        latitude: photo.latitude,
+        longitude: photo.longitude,
+        title: 'Elementos cerca de la foto',
+        referenceLabel: 'Ubicación de la foto'
+    });
+}
+
+/** Carga la foto local en la galería y muestra vista previa (flujo normal de incidencia). */
+async function loadAssignedLocalPhotoIntoIncidenceFlow(photoId) {
+    const photo = await getLocalPhotoById(photoId);
+    if (!photo || !photo.base64) {
+        throw new Error('No se encontró la foto local');
+    }
+
+    assignedLocalPhotoIdForIncidence = photoId;
+
+    const photoObj = {
+        base64: photo.base64,
+        url: null,
+        file_id: null,
+        filename: photo.filename || `assigned_${Date.now()}.jpg`,
+        converted: false
+    };
+
+    imagenia = photo.base64;
+    currentPhotoData = photo.base64;
+    photoGallery = [photoObj];
+    currentPhotoIndex = 0;
+    photoMode = 'reportar';
+    syncSendIncidenceBtnLabel();
+
+    const localDesc = (photo.description && String(photo.description).trim()) || '';
+    if (localDesc) {
+        pendingIncidenceData.description = localDesc;
+        pendingIncidenceData.fullText = localDesc;
+        pendingIncidenceData.hasLocalDescription = true;
+    }
+
+    const defaultImageContainer = document.querySelector('.default-image-container');
+    if (defaultImageContainer) {
+        defaultImageContainer.style.display = 'none';
+    }
+
+    updatePhotoGallery();
+    setAssignedLocalPhotoDescriptionVisible(localDesc);
+    if (elements.photoPreview) {
+        elements.photoPreview.style.display = 'block';
+    }
+    if (elements.sendIncidenceBtn) {
+        elements.sendIncidenceBtn.style.display = 'flex';
+        syncSendIncidenceBtnLabel();
+    }
+
+    (async () => {
+        try {
+            const response = await fetch('/api/convert-photo-to-url', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Device-ID': deviceId
+                },
+                body: JSON.stringify({
+                    image: photoObj.base64,
+                    filename: photoObj.filename
+                })
+            });
+            const result = await response.json();
+            if (result.success && photoGallery[0] === photoObj) {
+                photoGallery[0].url = result.url;
+                photoGallery[0].file_id = result.file_id;
+                photoGallery[0].converted = true;
+                updatePhotoGallery();
+            }
+        } catch (e) {
+            console.warn('No se pudo convertir foto local a URL:', e);
+        }
+    })();
+}
+
+function setupElementForIncidenceFromMap(element) {
+    const isMobiliario = element.Tipo === 'Mobiliario' || element.tipo === 'Mobiliario' ||
+        element.NombreVista === 'MobiliarioGis' || element.nombreVista === 'MobiliarioGis';
+    const tipoParada = element.TipoParada || element.tipoParada || element['Tipo Parada'] || '';
+    const isParadaBus = isMobiliario && tipoParada && tipoParada.toString().trim().length > 0;
+
+    let elementId = '';
+    let elementName = '';
+
+    if (isMobiliario) {
+        elementId = element.NumeroEmplazamiento || element['Nº Emplazamiento'] ||
+            element.numeroEmplazamiento || element['nº emplazamiento'] || 'ELEMENTO';
+        elementName = element.Descripcion || element.Descripción ||
+            element.descripcion || element.descripción || elementId;
+    } else {
+        elementId = element.NumeroRecurso || element.No_ ||
+            element.numeroRecurso || element.no_ ||
+            element.Codigo || element.codigo || 'ELEMENTO';
+        elementName = element.Name || element.name ||
+            element.Descripcion || element.Descripción ||
+            element.descripcion || element.descripción ||
+            element.Nombre || element.nombre || elementId;
+    }
+
+    currentQRData = elementId;
+    pendingIncidenceData.emtGis = normalizeEmtFromElement(element);
+
+    if (isParadaBus) {
+        pendingIncidenceData.isParadaBus = true;
+        pendingIncidenceData.isMobiliario = true;
+        pendingIncidenceData.stopNumber = elementId;
+    } else {
+        pendingIncidenceData.isParadaBus = false;
+        pendingIncidenceData.elementData = element;
+        pendingIncidenceData.isMobiliario = isMobiliario;
+    }
+
+    if (elements.qrData && elements.qrType && elements.qrResults) {
+        elements.qrData.textContent = elementId;
+        elements.qrData.href = '#';
+        elements.qrType.textContent = isMobiliario ? 'Mobiliario Cercano' : 'Recurso Cercano';
+        elements.qrResults.style.display = 'block';
+    }
+
+    return { elementId, elementName };
+}
 
 // ========================================
 // ELEMENTOS CERCANOS - MAPA
 // ========================================
 
 let nearbyMapInstance = null; // Instancia del mapa Leaflet
-let userMarker = null; // Marcador del usuario
+let userMarker = null; // Marcador del usuario (arrastrable)
+let nearbyRadiusCircle = null; // Círculo del radio de búsqueda
+let nearbyAccuracyCircle = null; // Círculo de precisión GPS
 let nearbyMarkers = []; // Marcadores de elementos cercanos
+/** Estado de la búsqueda abierta en el modal (para ampliar radio sin reubicar) */
+let nearbySearchState = null;
+let nearbyExpandInFlight = false;
+let nearbyRelocateInFlight = false;
+
+const NEARBY_ACCURACY_WARN_METERS = 500;
+const NEARBY_LAST_LOCATION_KEY = 'incidencias_last_good_nearby_location';
+
+function formatNearbyRadiusText(meters) {
+    const m = Number(meters) || 0;
+    if (m >= 1000) {
+        const km = m / 1000;
+        const text = Number.isInteger(km) ? String(km) : km.toFixed(1);
+        return `${text} km`;
+    }
+    return `${Math.round(m)} m`;
+}
+
+function getNextNearbyRadius(current, maxRadius) {
+    const cur = Number(current) || 0;
+    const max = Number(maxRadius) || 5000;
+    if (cur >= max) return max;
+    return Math.min(Math.max(cur * 2, cur + 100), max);
+}
+
+function isNearbyAccuracyPoor(accuracy) {
+    if (accuracy == null || accuracy === 0) return false; // 0 = coords fijas (foto / manual)
+    return Number(accuracy) > NEARBY_ACCURACY_WARN_METERS;
+}
+
+function loadLastGoodNearbyLocation() {
+    try {
+        const raw = localStorage.getItem(NEARBY_LAST_LOCATION_KEY);
+        if (!raw) return null;
+        const data = JSON.parse(raw);
+        if (data && typeof data.latitude === 'number' && typeof data.longitude === 'number') {
+            return data;
+        }
+    } catch (e) {
+        /* ignore */
+    }
+    return null;
+}
+
+function saveLastGoodNearbyLocation(latitude, longitude, accuracy) {
+    try {
+        localStorage.setItem(NEARBY_LAST_LOCATION_KEY, JSON.stringify({
+            latitude,
+            longitude,
+            accuracy: accuracy == null ? null : Number(accuracy),
+            savedAt: new Date().toISOString()
+        }));
+    } catch (e) {
+        console.warn('No se pudo guardar última ubicación:', e);
+    }
+}
+
+function updateNearbyModalTitle() {
+    if (!elements.nearbyModalTitle || !nearbySearchState) return;
+    const base = nearbySearchState.titleBase || 'Elementos Cerca';
+    const radiusText = formatNearbyRadiusText(nearbySearchState.radius);
+    elements.nearbyModalTitle.innerHTML =
+        `<i class="fas fa-map-marker-alt"></i> ${base} (${radiusText})`;
+}
+
+function updateExpandNearbyRadiusButton() {
+    if (!elements.expandNearbyRadiusBtn) return;
+    if (!nearbySearchState) {
+        elements.expandNearbyRadiusBtn.disabled = true;
+        if (elements.expandNearbyRadiusLabel) {
+            elements.expandNearbyRadiusLabel.textContent = 'Ampliar';
+        }
+        return;
+    }
+    const next = getNextNearbyRadius(nearbySearchState.radius, nearbySearchState.maxRadius);
+    const atMax = nearbySearchState.radius >= nearbySearchState.maxRadius;
+    elements.expandNearbyRadiusBtn.disabled = atMax || nearbyExpandInFlight || nearbyRelocateInFlight;
+    if (elements.expandNearbyRadiusLabel) {
+        elements.expandNearbyRadiusLabel.textContent = atMax
+            ? `Máx. ${formatNearbyRadiusText(nearbySearchState.maxRadius)}`
+            : `Ampliar a ${formatNearbyRadiusText(next)}`;
+    }
+    elements.expandNearbyRadiusBtn.title = atMax
+        ? `Radio máximo alcanzado (${formatNearbyRadiusText(nearbySearchState.maxRadius)})`
+        : `Ampliar radio a ${formatNearbyRadiusText(next)}`;
+}
+
+function setNearbyMapStatus(html) {
+    if (elements.mapStatus) {
+        elements.mapStatus.innerHTML = html;
+    }
+}
+
+function updateNearbyLocationHint() {
+    if (!elements.nearbyLocationHint || !elements.nearbyLocationHintText) return;
+    if (!nearbySearchState) {
+        elements.nearbyLocationHint.style.display = 'none';
+        return;
+    }
+
+    const acc = nearbySearchState.accuracy;
+    const poor = isNearbyAccuracyPoor(acc);
+    const last = loadLastGoodNearbyLocation();
+    const hasLast = !!(last && (
+        Math.abs(last.latitude - nearbySearchState.latitude) > 0.00005 ||
+        Math.abs(last.longitude - nearbySearchState.longitude) > 0.00005
+    ));
+
+    elements.nearbyLocationHint.style.display = 'flex';
+    elements.nearbyLocationHint.classList.toggle('is-ok', !poor);
+
+    if (poor) {
+        elements.nearbyLocationHintText.innerHTML =
+            `<i class="fas fa-exclamation-triangle"></i> Ubicación poco precisa (±${formatNearbyRadiusText(acc)}). ` +
+            `Arrastra el pin azul o toca el mapa para corregir el centro.`;
+    } else if (nearbySearchState.manuallySet) {
+        elements.nearbyLocationHintText.innerHTML =
+            `<i class="fas fa-hand-pointer"></i> Centro ajustado manualmente. Puedes arrastrar el pin o tocar el mapa otra vez.`;
+    } else {
+        const accText = (acc != null && acc > 0)
+            ? ` Precisión ±${formatNearbyRadiusText(acc)}.`
+            : '';
+        elements.nearbyLocationHintText.innerHTML =
+            `<i class="fas fa-info-circle"></i> Arrastra el pin azul o toca el mapa para mover el centro de búsqueda.${accText}`;
+    }
+
+    if (elements.useLastNearbyLocationBtn) {
+        elements.useLastNearbyLocationBtn.style.display = (poor && hasLast) ? 'inline-flex' : 'none';
+    }
+}
+
+async function fetchNearbySearchConfig() {
+    let searchRadius = 500;
+    let maxRadius = 5000;
+    let minRadius = 50;
+    try {
+        const configResponse = await fetch('/api/search-config', {
+            method: 'GET',
+            headers: { 'X-Device-ID': deviceId }
+        });
+        if (configResponse.ok) {
+            const configData = await configResponse.json();
+            if (configData.success && configData.config) {
+                searchRadius = configData.config.default_radius_meters || searchRadius;
+                maxRadius = configData.config.max_radius_meters || maxRadius;
+                minRadius = configData.config.min_radius_meters || minRadius;
+            }
+        }
+    } catch (error) {
+        console.warn('⚠️ No se pudo obtener la configuración, usando valores por defecto:', error);
+    }
+    return { searchRadius, maxRadius, minRadius };
+}
+
+function updateNearbyAccuracyCircle(latitude, longitude, accuracy) {
+    if (!nearbyMapInstance) return;
+    if (nearbyAccuracyCircle) {
+        nearbyMapInstance.removeLayer(nearbyAccuracyCircle);
+        nearbyAccuracyCircle = null;
+    }
+    if (accuracy == null || accuracy <= 0 || !isNearbyAccuracyPoor(accuracy)) {
+        return;
+    }
+    nearbyAccuracyCircle = L.circle([latitude, longitude], {
+        color: '#e67e22',
+        fillColor: '#f39c12',
+        fillOpacity: 0.08,
+        weight: 1,
+        dashArray: '4 4',
+        radius: accuracy
+    }).addTo(nearbyMapInstance);
+}
+
+async function runNearbyElementsSearch(latitude, longitude, searchRadius) {
+    setNearbyMapStatus('<i class="fas fa-spinner fa-spin"></i> Buscando elementos cercanos...');
+    const nearbyElements = await getNearbyElements(latitude, longitude, searchRadius);
+    const radiusText = formatNearbyRadiusText(searchRadius);
+    const acc = nearbySearchState && nearbySearchState.accuracy;
+    const accNote = (acc != null && acc > 0)
+        ? ` · GPS ±${formatNearbyRadiusText(acc)}`
+        : '';
+
+    if (nearbyElements && nearbyElements.success) {
+        console.log(`✅ Encontrados ${nearbyElements.elements.length} elementos cercanos`);
+        displayElementsOnMap(nearbyElements.elements);
+        setNearbyMapStatus(
+            `<i class="fas fa-check-circle"></i> ${nearbyElements.elements.length} elemento(s) en ${radiusText}${accNote}`
+        );
+    } else {
+        displayElementsOnMap([]);
+        setNearbyMapStatus(
+            `<i class="fas fa-info-circle"></i> Sin elementos en ${radiusText}${accNote}`
+        );
+    }
+    updateNearbyLocationHint();
+    return nearbyElements;
+}
+
+/** Mueve el centro de búsqueda (pin / clic en mapa / última ubicación). */
+async function relocateNearbySearch(latitude, longitude, options = {}) {
+    if (!nearbySearchState || nearbyRelocateInFlight) return;
+    const {
+        accuracy = 0,
+        manuallySet = true,
+        saveAsGood = true,
+        fitBounds = true
+    } = options;
+
+    nearbyRelocateInFlight = true;
+    updateExpandNearbyRadiusButton();
+
+    try {
+        nearbySearchState.latitude = latitude;
+        nearbySearchState.longitude = longitude;
+        nearbySearchState.accuracy = accuracy;
+        nearbySearchState.manuallySet = !!manuallySet;
+
+        if (userMarker) {
+            userMarker.setLatLng([latitude, longitude]);
+        }
+        if (nearbyRadiusCircle) {
+            nearbyRadiusCircle.setLatLng([latitude, longitude]);
+            if (fitBounds) {
+                try {
+                    nearbyMapInstance.fitBounds(nearbyRadiusCircle.getBounds(), { padding: [24, 24] });
+                } catch (e) {
+                    /* ignore */
+                }
+            }
+        }
+        updateNearbyAccuracyCircle(latitude, longitude, accuracy);
+
+        if (saveAsGood) {
+            saveLastGoodNearbyLocation(latitude, longitude, accuracy);
+        }
+
+        await runNearbyElementsSearch(latitude, longitude, nearbySearchState.radius);
+        showStatus('Centro de búsqueda actualizado', 'success');
+    } catch (error) {
+        console.error('❌ Error al mover el centro de búsqueda:', error);
+        setNearbyMapStatus(`<i class="fas fa-exclamation-triangle"></i> Error: ${error.message}`);
+        showStatus('Error al mover el centro: ' + error.message, 'error');
+    } finally {
+        nearbyRelocateInFlight = false;
+        updateExpandNearbyRadiusButton();
+    }
+}
+
+async function useLastGoodNearbyLocation() {
+    const last = loadLastGoodNearbyLocation();
+    if (!last) {
+        showStatus('No hay una ubicación buena guardada todavía', 'info');
+        return;
+    }
+    await relocateNearbySearch(last.latitude, last.longitude, {
+        accuracy: last.accuracy != null ? last.accuracy : 0,
+        manuallySet: true,
+        saveAsGood: true
+    });
+}
+
+async function expandNearbySearchRadius() {
+    if (!nearbySearchState || nearbyExpandInFlight) return;
+    if (nearbySearchState.radius >= nearbySearchState.maxRadius) {
+        showStatus(`Ya estás en el radio máximo (${formatNearbyRadiusText(nearbySearchState.maxRadius)})`, 'info');
+        return;
+    }
+
+    const nextRadius = getNextNearbyRadius(nearbySearchState.radius, nearbySearchState.maxRadius);
+    nearbyExpandInFlight = true;
+    updateExpandNearbyRadiusButton();
+
+    try {
+        nearbySearchState.radius = nextRadius;
+        updateNearbyModalTitle();
+        updateExpandNearbyRadiusButton();
+
+        if (nearbyRadiusCircle) {
+            nearbyRadiusCircle.setRadius(nextRadius);
+            try {
+                nearbyMapInstance.fitBounds(nearbyRadiusCircle.getBounds(), { padding: [24, 24] });
+            } catch (e) {
+                /* ignore */
+            }
+        }
+
+        await runNearbyElementsSearch(
+            nearbySearchState.latitude,
+            nearbySearchState.longitude,
+            nextRadius
+        );
+        showStatus(`Radio ampliado a ${formatNearbyRadiusText(nextRadius)}`, 'success');
+    } catch (error) {
+        console.error('❌ Error al ampliar radio:', error);
+        setNearbyMapStatus(`<i class="fas fa-exclamation-triangle"></i> Error: ${error.message}`);
+        showStatus('Error al ampliar el radio: ' + error.message, 'error');
+    } finally {
+        nearbyExpandInFlight = false;
+        updateExpandNearbyRadiusButton();
+    }
+}
 
 // Mostrar modal de elementos cercanos
-async function showNearbyElements() {
+async function showNearbyElements(options = {}) {
+    const {
+        latitude: latOpt,
+        longitude: lonOpt,
+        title,
+        referenceLabel
+    } = options;
+
     try {
         console.log('🗺️ Abriendo modal de elementos cercanos...');
         
-        // Mostrar modal
         if (elements.nearbyElementsModal) {
             elements.nearbyElementsModal.style.display = 'block';
         }
-        
-        // Actualizar estado
-        if (elements.mapStatus) {
-            elements.mapStatus.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Obteniendo ubicación...';
+
+        const titleBase = title || 'Elementos Cerca';
+        if (elements.nearbyModalTitle) {
+            elements.nearbyModalTitle.innerHTML =
+                `<i class="fas fa-map-marker-alt"></i> ${titleBase}`;
+        }
+        updateExpandNearbyRadiusButton();
+        if (elements.nearbyLocationHint) {
+            elements.nearbyLocationHint.style.display = 'none';
         }
         
-        // Obtener ubicación del usuario
-        const position = await getCurrentPosition();
+        setNearbyMapStatus(
+            latOpt != null && lonOpt != null
+                ? '<i class="fas fa-spinner fa-spin"></i> Buscando elementos cercanos...'
+                : '<i class="fas fa-spinner fa-spin"></i> Obteniendo ubicación...'
+        );
+        
+        let position;
+        if (latOpt != null && lonOpt != null) {
+            position = { latitude: latOpt, longitude: lonOpt, accuracy: 0 };
+        } else {
+            position = await getCurrentPosition();
+        }
         
         if (!position) {
-            if (elements.mapStatus) {
-                elements.mapStatus.innerHTML = '<i class="fas fa-exclamation-triangle"></i> No se pudo obtener la ubicación. Verifica los permisos de geolocalización.';
-            }
+            setNearbyMapStatus('<i class="fas fa-exclamation-triangle"></i> No se pudo obtener la ubicación. Verifica los permisos de geolocalización.');
             return;
         }
         
-        const { latitude, longitude } = position;
-        console.log(`📍 Ubicación del usuario obtenida: Lat=${latitude}, Lon=${longitude}`);
-        console.log(`📍 Precisión: ${position.accuracy}m`);
+        const { latitude, longitude, accuracy } = position;
+        console.log(`📍 Ubicación: Lat=${latitude}, Lon=${longitude}, accuracy=${accuracy}`);
         
-        // Obtener radio desde la configuración del servidor
-        let searchRadius = 1000; // Valor por defecto
-        try {
-            const configResponse = await fetch('/api/search-config', {
-                method: 'GET',
-                headers: {
-                    'X-Device-ID': deviceId
-                }
-            });
-            if (configResponse.ok) {
-                const configData = await configResponse.json();
-                if (configData.success && configData.config) {
-                    searchRadius = configData.config.default_radius_meters || 1000;
-                }
-            }
-        } catch (error) {
-            console.warn('⚠️ No se pudo obtener la configuración, usando valor por defecto:', error);
-        }
+        const { searchRadius, maxRadius } = await fetchNearbySearchConfig();
         console.log(`🔍 Buscando elementos en radio de ${searchRadius}m`);
-        
-        // Inicializar mapa con el radio de la configuración
-        initializeMap(latitude, longitude, searchRadius);
-        
-        // Obtener elementos cercanos
-        if (elements.mapStatus) {
-            elements.mapStatus.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Buscando elementos cercanos...';
+
+        nearbySearchState = {
+            latitude,
+            longitude,
+            accuracy: accuracy != null ? accuracy : null,
+            radius: searchRadius,
+            maxRadius,
+            titleBase,
+            referenceLabel: referenceLabel || 'Tu ubicación',
+            manuallySet: false
+        };
+        updateNearbyModalTitle();
+        updateExpandNearbyRadiusButton();
+
+        // Guardar ubicaciones buenas (GPS móvil o coords de foto) para reutilizar en PC
+        if (!isNearbyAccuracyPoor(accuracy)) {
+            saveLastGoodNearbyLocation(latitude, longitude, accuracy == null ? 0 : accuracy);
         }
-        const nearbyElements = await getNearbyElements(latitude, longitude, searchRadius);
         
-        if (nearbyElements && nearbyElements.success) {
-            console.log(`✅ Encontrados ${nearbyElements.elements.length} elementos cercanos`);
-            console.log(`📊 Primeros elementos:`, nearbyElements.elements.slice(0, 3).map(el => ({
-                Tipo: el.Tipo,
-                PuntoX: el.PuntoX,
-                PuntoY: el.PuntoY,
-                Distancia: el.Distancia
-            })));
-            
-            // Mostrar elementos en el mapa
-            displayElementsOnMap(nearbyElements.elements);
-            
-            if (elements.mapStatus) {
-                const radiusKm = (searchRadius / 1000).toFixed(searchRadius >= 1000 ? 1 : 0);
-                const radiusText = searchRadius >= 1000 ? `${radiusKm}km` : `${searchRadius}m`;
-                elements.mapStatus.innerHTML = `<i class="fas fa-check-circle"></i> ${nearbyElements.elements.length} elemento(s) encontrado(s) en un radio de ${radiusText}`;
-            }
-        } else {
-            console.log('⚠️ No se encontraron elementos cercanos');
-            if (elements.mapStatus) {
-                const radiusKm = (searchRadius / 1000).toFixed(searchRadius >= 1000 ? 1 : 0);
-                const radiusText = searchRadius >= 1000 ? `${radiusKm}km` : `${searchRadius}m`;
-                elements.mapStatus.innerHTML = `<i class="fas fa-info-circle"></i> No se encontraron elementos cercanos en un radio de ${radiusText}`;
-            }
+        initializeMap(latitude, longitude, searchRadius, nearbySearchState.referenceLabel, accuracy);
+        await runNearbyElementsSearch(latitude, longitude, searchRadius);
+
+        if (isNearbyAccuracyPoor(accuracy)) {
+            showStatus(
+                `Ubicación poco precisa (±${formatNearbyRadiusText(accuracy)}). Arrastra el pin o toca el mapa.`,
+                'warning'
+            );
         }
         
     } catch (error) {
         console.error('❌ Error al mostrar elementos cercanos:', error);
-        if (elements.mapStatus) {
-            elements.mapStatus.innerHTML = `<i class="fas fa-exclamation-triangle"></i> Error: ${error.message}`;
-        }
+        setNearbyMapStatus(`<i class="fas fa-exclamation-triangle"></i> Error: ${error.message}`);
         showStatus('Error al obtener elementos cercanos: ' + error.message, 'error');
     }
 }
 
-// Obtener posición actual del usuario
+// Obtener posición actual del usuario (en PC prueba Wi‑Fi si el GPS es muy impreciso)
 function getCurrentPosition() {
     return new Promise((resolve, reject) => {
         if (!navigator.geolocation) {
             reject(new Error('Geolocalización no soportada por este navegador'));
             return;
         }
-        
-        navigator.geolocation.getCurrentPosition(
-            (position) => {
-                resolve({
-                    latitude: position.coords.latitude,
-                    longitude: position.coords.longitude,
-                    accuracy: position.coords.accuracy
-                });
-            },
-            (error) => {
+
+        const readOnce = (enableHighAccuracy, timeout) => new Promise((res, rej) => {
+            navigator.geolocation.getCurrentPosition(
+                (position) => {
+                    res({
+                        latitude: position.coords.latitude,
+                        longitude: position.coords.longitude,
+                        accuracy: position.coords.accuracy
+                    });
+                },
+                (error) => rej(error),
+                {
+                    enableHighAccuracy,
+                    timeout,
+                    maximumAge: 0
+                }
+            );
+        });
+
+        (async () => {
+            try {
+                // En escritorio, Wi‑Fi suele ser mejor que "alta precisión" sin GPS
+                const preferWifiFirst = !('ontouchstart' in window) && !navigator.maxTouchPoints;
+                let first;
+                try {
+                    first = await readOnce(preferWifiFirst ? false : true, preferWifiFirst ? 8000 : 10000);
+                } catch (e1) {
+                    first = await readOnce(!preferWifiFirst ? false : true, 10000);
+                }
+
+                if (isNearbyAccuracyPoor(first.accuracy)) {
+                    try {
+                        const second = await readOnce(!preferWifiFirst, 8000);
+                        if (!isNearbyAccuracyPoor(second.accuracy) ||
+                            (second.accuracy != null && first.accuracy != null && second.accuracy < first.accuracy)) {
+                            resolve(second);
+                            return;
+                        }
+                    } catch (e2) {
+                        /* quedarse con first */
+                    }
+                }
+                resolve(first);
+            } catch (error) {
                 console.error('Error de geolocalización:', error);
-                reject(new Error('No se pudo obtener la ubicación: ' + error.message));
-            },
-            {
-                enableHighAccuracy: true,
-                timeout: 10000,
-                maximumAge: 0
+                reject(new Error('No se pudo obtener la ubicación: ' + (error.message || error)));
             }
-        );
+        })();
     });
 }
 
 // Inicializar mapa Leaflet
-function initializeMap(latitude, longitude, radius = 1000) {
+function initializeMap(latitude, longitude, radius = 1000, referenceLabel, accuracy) {
     // Limpiar mapa anterior si existe
     if (nearbyMapInstance) {
         nearbyMapInstance.remove();
         nearbyMapInstance = null;
     }
+    nearbyRadiusCircle = null;
+    nearbyAccuracyCircle = null;
     
     // Crear nuevo mapa
     nearbyMapInstance = L.map('nearbyMap').setView([latitude, longitude], 17);
@@ -6856,8 +8047,11 @@ function initializeMap(latitude, longitude, radius = 1000) {
         maxZoom: 19
     }).addTo(nearbyMapInstance);
     
-    // Añadir marcador del usuario
+    // Marcador arrastrable: en PC permite corregir ubicación mala
     userMarker = L.marker([latitude, longitude], {
+        draggable: true,
+        autoPan: true,
+        title: 'Arrastra para mover el centro de búsqueda',
         icon: L.icon({
             iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-blue.png',
             shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/images/marker-shadow.png',
@@ -6868,15 +8062,49 @@ function initializeMap(latitude, longitude, radius = 1000) {
         })
     }).addTo(nearbyMapInstance);
     
-    userMarker.bindPopup('<b>Tu ubicación</b>').openPopup();
+    const popupLabel = referenceLabel || 'Tu ubicación';
+    userMarker.bindPopup(
+        `<b>${popupLabel}</b><br><small>Arrastra el pin o toca el mapa</small>`
+    ).openPopup();
+
+    userMarker.on('dragend', () => {
+        const ll = userMarker.getLatLng();
+        relocateNearbySearch(ll.lat, ll.lng, {
+            accuracy: 0,
+            manuallySet: true,
+            saveAsGood: true,
+            fitBounds: false
+        });
+    });
+
+    nearbyMapInstance.on('click', (e) => {
+        if (nearbyRelocateInFlight) return;
+        relocateNearbySearch(e.latlng.lat, e.latlng.lng, {
+            accuracy: 0,
+            manuallySet: true,
+            saveAsGood: true,
+            fitBounds: false
+        });
+    });
     
-    // Añadir círculo con el radio de la configuración
-    L.circle([latitude, longitude], {
+    // Círculo del radio (se reutiliza al ampliar sin recrear el mapa)
+    nearbyRadiusCircle = L.circle([latitude, longitude], {
         color: 'blue',
         fillColor: '#3388ff',
         fillOpacity: 0.2,
         radius: radius
     }).addTo(nearbyMapInstance);
+
+    updateNearbyAccuracyCircle(latitude, longitude, accuracy);
+
+    try {
+        const boundsTarget = (nearbyAccuracyCircle && isNearbyAccuracyPoor(accuracy))
+            ? nearbyAccuracyCircle
+            : nearbyRadiusCircle;
+        nearbyMapInstance.fitBounds(boundsTarget.getBounds(), { padding: [24, 24] });
+    } catch (e) {
+        /* ignore */
+    }
 }
 
 // Obtener elementos cercanos del servidor
@@ -7137,7 +8365,6 @@ function displayElementsOnMap(elements) {
 // Crear incidencia desde un elemento del mapa
 async function createIncidenceFromElement(elementIndex) {
     try {
-        // Buscar el marcador por índice
         const marker = nearbyMarkers[elementIndex];
         
         if (!marker || !marker.elementData) {
@@ -7146,64 +8373,23 @@ async function createIncidenceFromElement(elementIndex) {
         }
         
         const element = marker.elementData;
-        
         console.log('📝 Creando incidencia desde elemento:', element);
+
+        // Guardar antes de cerrar el modal: closeNearbyElementsModal limpia pendingAssignedLocalPhotoId
+        const localPhotoId = pendingAssignedLocalPhotoId;
         
-        // Cerrar modal del mapa
-        closeNearbyElementsModal();
+        closeNearbyElementsModal({ clearAssignedPhoto: false });
         
-        // Establecer datos del elemento como QR
-        // Para MobiliarioGis usar Nº Emplazamiento, para RecursosGIS usar el ID correspondiente
-        const isMobiliario = element.Tipo === 'Mobiliario' || element.tipo === 'Mobiliario' || 
-                            element.NombreVista === 'MobiliarioGis' || element.nombreVista === 'MobiliarioGis';
-        
-        // Determinar si es una parada de bus (solo para Mobiliario)
-        const tipoParada = element.TipoParada || element.tipoParada || element['Tipo Parada'] || '';
-        const isParadaBus = isMobiliario && tipoParada && tipoParada.toString().trim().length > 0;
-        
-        let elementId = '';
-        let elementName = '';
-        
-        if (isMobiliario) {
-            elementId = element.NumeroEmplazamiento || element['Nº Emplazamiento'] || 
-                       element.numeroEmplazamiento || element['nº emplazamiento'] || 'ELEMENTO';
-            elementName = element.Descripcion || element.Descripción || 
-                         element.descripcion || element.descripción || elementId;
-        } else {
-            // RecursosGIS: usar No_ como ID y Name como nombre
-            elementId = element.NumeroRecurso || element.No_ || 
-                       element.numeroRecurso || element.no_ || 
-                       element.Codigo || element.codigo || 'ELEMENTO';
-            elementName = element.Name || element.name || 
-                         element.Descripcion || element.Descripción || 
-                         element.descripcion || element.descripción || 
-                         element.Nombre || element.nombre || elementId;
+        const { elementName } = setupElementForIncidenceFromMap(element);
+
+        pendingAssignedLocalPhotoId = null;
+
+        if (localPhotoId) {
+            await loadAssignedLocalPhotoIntoIncidenceFlow(localPhotoId);
+            showStatus(`Incidencia preparada para: ${elementName}. Revisa la foto y envía.`, 'success');
+            return;
         }
         
-        currentQRData = elementId;
-        
-        // Restricción EMT desde GIS (1 = solo EMT; 0 = sin EMT)
-        pendingIncidenceData.emtGis = normalizeEmtFromElement(element);
-        // Guardar información sobre si es parada de bus para usar después
-        if (isParadaBus) {
-            pendingIncidenceData.isParadaBus = true;
-            pendingIncidenceData.isMobiliario = true;
-            pendingIncidenceData.stopNumber = elementId;
-        } else {
-            pendingIncidenceData.isParadaBus = false;
-            pendingIncidenceData.elementData = element;
-            pendingIncidenceData.isMobiliario = isMobiliario;
-        }
-        
-        // Mostrar en la sección de QR
-        if (elements.qrData && elements.qrType && elements.qrResults) {
-            elements.qrData.textContent = elementId;
-            elements.qrData.href = '#';
-            elements.qrType.textContent = isMobiliario ? 'Mobiliario Cercano' : 'Recurso Cercano';
-            elements.qrResults.style.display = 'block';
-        }
-        
-        // Abrir modal de cámara para tomar foto
         photoMode = 'reportar';
         syncSendIncidenceBtnLabel();
         startPhotoAutoCapture();
@@ -7339,9 +8525,16 @@ window.createIncidenceFromElement = createIncidenceFromElement;
 window.closeIncidenceFromElement = closeIncidenceFromElement;
 
 // Cerrar modal de elementos cercanos
-function closeNearbyElementsModal() {
+function closeNearbyElementsModal(options = {}) {
+    const { clearAssignedPhoto = true } = options;
+
     if (elements.nearbyElementsModal) {
         elements.nearbyElementsModal.style.display = 'none';
+    }
+
+    // Solo al cancelar (× / Escape / clic fuera): no al crear incidencia con foto ya elegida
+    if (clearAssignedPhoto && !assignedLocalPhotoIdForIncidence) {
+        pendingAssignedLocalPhotoId = null;
     }
     
     // Limpiar mapa
@@ -7352,6 +8545,15 @@ function closeNearbyElementsModal() {
     
     nearbyMarkers = [];
     userMarker = null;
+    nearbyRadiusCircle = null;
+    nearbyAccuracyCircle = null;
+    nearbySearchState = null;
+    nearbyExpandInFlight = false;
+    nearbyRelocateInFlight = false;
+    updateExpandNearbyRadiusButton();
+    if (elements.nearbyLocationHint) {
+        elements.nearbyLocationHint.style.display = 'none';
+    }
     
     console.log('🗺️ Modal de elementos cercanos cerrado');
 }

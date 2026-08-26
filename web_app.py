@@ -40,7 +40,7 @@ CORS(app, resources={
 })
 
 # Configuración de sesión
-app.secret_key = 'incidencias_malla_secret_key_2024'
+app.secret_key = FLASK_SECRET_KEY
 app.config['SESSION_TYPE'] = 'filesystem'
 
 # Middleware para logging de todas las peticiones
@@ -110,9 +110,14 @@ class DeviceSessionManager:
         if device_id:
             return device_id
         
+        # Query string (p. ej. <img src="...?device_id=...">)
+        device_id = request.args.get('device_id')
+        if device_id:
+            return device_id
+
         # Intentar obtener desde parámetros de la petición
         if request.is_json:
-            data = request.get_json()
+            data = request.get_json(silent=True) or {}
             device_id = data.get('device_id')
             if device_id:
                 return device_id
@@ -1296,6 +1301,161 @@ def get_tasks_by_qr():
     except Exception as e:
         return jsonify({'error': f'Error interno: {str(e)}'}), 500
 
+@app.route('/api/pending-photos', methods=['POST'])
+def api_create_pending_photo():
+    """Guarda una foto pendiente de asignar (usuario autenticado + GPS + descripción)."""
+    try:
+        if not request.is_json:
+            return jsonify({'success': False, 'error': 'Se requiere JSON'}), 400
+
+        device_session = get_current_device_session()
+        gtask_auth = device_session.get('gtask_auth') if device_session else None
+        if not gtask_auth or not gtask_auth.get_current_user_id():
+            return jsonify({'success': False, 'error': 'No hay usuario autenticado'}), 401
+
+        user = gtask_auth.get_current_user_info() or {}
+        user_id = user.get('_id') or gtask_auth.get_current_user_id()
+        username = user.get('username') or 'Usuario'
+
+        data = request.get_json() or {}
+        image = data.get('image')
+        if not image:
+            return jsonify({'success': False, 'error': 'No se proporcionó imagen'}), 400
+
+        from pending_photos_storage import create_pending_photo
+
+        lat = data.get('latitude')
+        lon = data.get('longitude')
+        acc = data.get('accuracy')
+        try:
+            lat = float(lat) if lat is not None and lat != '' else None
+        except (TypeError, ValueError):
+            lat = None
+        try:
+            lon = float(lon) if lon is not None and lon != '' else None
+        except (TypeError, ValueError):
+            lon = None
+        try:
+            acc = float(acc) if acc is not None and acc != '' else None
+        except (TypeError, ValueError):
+            acc = None
+
+        record = create_pending_photo(
+            image_data=image,
+            user_id=user_id,
+            username=username,
+            latitude=lat,
+            longitude=lon,
+            accuracy=acc,
+            description=data.get('description') or '',
+            filename=data.get('filename'),
+        )
+        record['imageUrl'] = f"/api/pending-photos/{record['id']}/image"
+        return jsonify({'success': True, 'photo': record})
+    except Exception as e:
+        import traceback
+        print(f'❌ Error al guardar foto pendiente: {e}\n{traceback.format_exc()}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/pending-photos', methods=['GET'])
+def api_list_pending_photos():
+    """Lista fotos pendientes. ?scope=mine (default) | all"""
+    try:
+        device_session = get_current_device_session()
+        gtask_auth = device_session.get('gtask_auth') if device_session else None
+        if not gtask_auth or not gtask_auth.get_current_user_id():
+            return jsonify({'success': False, 'error': 'No hay usuario autenticado'}), 401
+
+        user_id = gtask_auth.get_current_user_id()
+        scope = (request.args.get('scope') or 'mine').strip().lower()
+        if scope not in ('mine', 'all'):
+            scope = 'mine'
+
+        from pending_photos_storage import list_pending_photos
+
+        photos = list_pending_photos(scope=scope, current_user_id=user_id)
+        for p in photos:
+            p['imageUrl'] = f"/api/pending-photos/{p['id']}/image"
+        return jsonify({
+            'success': True,
+            'scope': scope,
+            'current_user_id': str(user_id),
+            'photos': photos,
+            'count': len(photos),
+        })
+    except Exception as e:
+        import traceback
+        print(f'❌ Error al listar fotos pendientes: {e}\n{traceback.format_exc()}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/pending-photos/<photo_id>/image', methods=['GET'])
+def api_pending_photo_image(photo_id):
+    """Sirve la imagen de una foto pendiente (requiere sesión)."""
+    try:
+        device_session = get_current_device_session()
+        gtask_auth = device_session.get('gtask_auth') if device_session else None
+        if not gtask_auth or not gtask_auth.get_current_user_id():
+            return jsonify({'success': False, 'error': 'No hay usuario autenticado'}), 401
+
+        from pending_photos_storage import get_pending_photo_file_path
+
+        path = get_pending_photo_file_path(photo_id)
+        if not path:
+            return jsonify({'success': False, 'error': 'Foto no encontrada'}), 404
+        return send_file(path, mimetype='image/jpeg', conditional=True)
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/pending-photos/<photo_id>/data', methods=['GET'])
+def api_pending_photo_data(photo_id):
+    """Metadatos + data URL (para cargar en el flujo de incidencia)."""
+    try:
+        device_session = get_current_device_session()
+        gtask_auth = device_session.get('gtask_auth') if device_session else None
+        if not gtask_auth or not gtask_auth.get_current_user_id():
+            return jsonify({'success': False, 'error': 'No hay usuario autenticado'}), 401
+
+        from pending_photos_storage import get_pending_photo, read_pending_photo_as_data_url
+
+        record = get_pending_photo(photo_id)
+        if not record:
+            return jsonify({'success': False, 'error': 'Foto no encontrada'}), 404
+        data_url = read_pending_photo_as_data_url(photo_id)
+        if not data_url:
+            return jsonify({'success': False, 'error': 'Archivo de imagen no encontrado'}), 404
+        record['imageUrl'] = f"/api/pending-photos/{photo_id}/image"
+        record['base64'] = data_url
+        return jsonify({'success': True, 'photo': record})
+    except Exception as e:
+        import traceback
+        print(f'❌ Error al leer foto pendiente: {e}\n{traceback.format_exc()}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/pending-photos/<photo_id>', methods=['DELETE'])
+def api_delete_pending_photo(photo_id):
+    """Elimina una foto pendiente (tras enviar incidencia o a petición del usuario)."""
+    try:
+        device_session = get_current_device_session()
+        gtask_auth = device_session.get('gtask_auth') if device_session else None
+        if not gtask_auth or not gtask_auth.get_current_user_id():
+            return jsonify({'success': False, 'error': 'No hay usuario autenticado'}), 401
+
+        from pending_photos_storage import delete_pending_photo
+
+        ok = delete_pending_photo(photo_id)
+        if not ok:
+            return jsonify({'success': False, 'error': 'Foto no encontrada'}), 404
+        return jsonify({'success': True, 'message': 'Foto eliminada'})
+    except Exception as e:
+        import traceback
+        print(f'❌ Error al eliminar foto pendiente: {e}\n{traceback.format_exc()}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
 @app.route('/api/convert-photo-to-url', methods=['POST'])
 def convert_photo_to_url():
     """
@@ -1637,36 +1797,10 @@ def query_nearby_elements_from_sql(latitude, longitude, radius_meters):
     Consultar elementos cercanos desde SQL Server usando las vistas MobiliarioGis y RecursosGIS
     """
     try:
-        import pyodbc
-        
-        # Configuración de conexión SQL Server
-        server = '192.168.10.190'
-        database = 'Malla2009'
-        username = 'SA'
-        password = 'SA1234sa'
-        
-        # Cadena de conexión
-        connection_string = (
-            f'DRIVER={{ODBC Driver 17 for SQL Server}};'
-            f'SERVER={server};'
-            f'DATABASE={database};'
-            f'UID={username};'
-            f'PWD={password}'
-        )
-        
-        # Intentar conectar
-        try:
-            conn = pyodbc.connect(connection_string)
-        except pyodbc.Error as e:
-            # Intentar con driver alternativo si el 17 no está disponible
-            connection_string = (
-                f'DRIVER={{SQL Server}};'
-                f'SERVER={server};'
-                f'DATABASE={database};'
-                f'UID={username};'
-                f'PWD={password}'
-            )
-            conn = pyodbc.connect(connection_string)
+        from config import get_gis_sql_connection
+
+        # Credenciales SQL desde .env
+        conn = get_gis_sql_connection()
         
         cursor = conn.cursor()
         
@@ -1884,10 +2018,16 @@ def _normalize_emt_flag(value):
     return None
 
 
+def _connect_malla2009_sql():
+    """Conexión a Malla2009 (RecursosGis / MobiliarioGis). Credenciales desde .env."""
+    from config import get_gis_sql_connection
+    return get_gis_sql_connection(prefer_driver17=True)
+
+
 def lookup_resource_emt_in_sql(resource_code: str):
     """Busca EMT y Tipo para un No_ de RecursosGis."""
     try:
-        import pyodbc
+        import pyodbc  # noqa: F401
     except ImportError:
         return None
 
@@ -1895,34 +2035,10 @@ def lookup_resource_emt_in_sql(resource_code: str):
     if not target:
         return None
 
-    server = '192.168.10.190'
-    database = 'Malla2009'
-    username = 'SA'
-    password = 'SA1234sa'
-
-    connection_string = (
-        f'DRIVER={{ODBC Driver 17 for SQL Server}};'
-        f'SERVER={server};'
-        f'DATABASE={database};'
-        f'UID={username};'
-        f'PWD={password}'
-    )
-
     conn = None
     cursor = None
     try:
-        try:
-            conn = pyodbc.connect(connection_string)
-        except pyodbc.Error:
-            connection_string = (
-                f'DRIVER={{SQL Server}};'
-                f'SERVER={server};'
-                f'DATABASE={database};'
-                f'UID={username};'
-                f'PWD={password}'
-            )
-            conn = pyodbc.connect(connection_string)
-
+        conn = _connect_malla2009_sql()
         cursor = conn.cursor()
         candidates = _resource_lookup_candidates(resource_code)
         rows = []
@@ -1954,6 +2070,8 @@ def lookup_resource_emt_in_sql(resource_code: str):
                     "resource": no_val,
                     "emt": _normalize_emt_flag(getattr(row, "EMT", None)),
                     "tipoElemento": str(getattr(row, "TipoElemento", "") or "").strip(),
+                    "tipoParada": "",
+                    "source": "recurso",
                 }
         return None
     except Exception as e:
@@ -1972,25 +2090,137 @@ def lookup_resource_emt_in_sql(resource_code: str):
             pass
 
 
+def _normalize_emplazamiento_for_compare(code: str) -> str:
+    s = str(code or "").strip().upper()
+    if s.startswith("PARADA_"):
+        s = s[7:].strip()
+    if s.isdigit():
+        return str(int(s))
+    return s
+
+
+def lookup_mobiliario_emt_in_sql(emplazamiento: str):
+    """Busca EMT y Tipo en MobiliarioGis por Nº Emplazamiento (mismo criterio que Elementos cerca)."""
+    try:
+        import pyodbc  # noqa: F401
+    except ImportError:
+        return None
+
+    raw = str(emplazamiento or "").strip()
+    if raw.upper().startswith("PARADA_"):
+        raw = raw[7:].strip()
+    if not raw:
+        return None
+    target = _normalize_emplazamiento_for_compare(raw)
+
+    conn = None
+    cursor = None
+    try:
+        conn = _connect_malla2009_sql()
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 50
+                [Nº Emplazamiento] as NumeroEmplazamiento,
+                [EMT] as EMT,
+                [Tipo] as TipoElemento,
+                [Tipo Parada] as TipoParada
+            FROM [dbo].[MobiliarioGis]
+            WHERE [Nº Emplazamiento] IS NOT NULL
+              AND (
+                    LTRIM(RTRIM(CAST([Nº Emplazamiento] AS NVARCHAR(50)))) = ?
+                 OR LTRIM(RTRIM(CAST([Nº Emplazamiento] AS NVARCHAR(50)))) = ?
+              )
+            """,
+            raw,
+            target,
+        )
+        rows = cursor.fetchall()
+        for row in rows:
+            no_val = str(getattr(row, "NumeroEmplazamiento", "") or "").strip()
+            if _normalize_emplazamiento_for_compare(no_val) != target and no_val != raw:
+                continue
+            return {
+                "resource": no_val or raw,
+                "emt": _normalize_emt_flag(getattr(row, "EMT", None)),
+                "tipoElemento": str(getattr(row, "TipoElemento", "") or "").strip(),
+                "tipoParada": str(getattr(row, "TipoParada", "") or "").strip(),
+                "source": "mobiliario",
+            }
+        # Fallback numérico si el tipo de columna no matcheó como texto
+        if target.isdigit():
+            cursor.execute(
+                """
+                SELECT TOP 50
+                    [Nº Emplazamiento] as NumeroEmplazamiento,
+                    [EMT] as EMT,
+                    [Tipo] as TipoElemento,
+                    [Tipo Parada] as TipoParada
+                FROM [dbo].[MobiliarioGis]
+                WHERE TRY_CAST([Nº Emplazamiento] AS INT) = ?
+                """,
+                int(target),
+            )
+            for row in cursor.fetchall():
+                no_val = str(getattr(row, "NumeroEmplazamiento", "") or "").strip()
+                return {
+                    "resource": no_val or raw,
+                    "emt": _normalize_emt_flag(getattr(row, "EMT", None)),
+                    "tipoElemento": str(getattr(row, "TipoElemento", "") or "").strip(),
+                    "tipoParada": str(getattr(row, "TipoParada", "") or "").strip(),
+                    "source": "mobiliario",
+                }
+        return None
+    except Exception as e:
+        print(f"⚠️ Error buscando EMT por mobiliario/parada en SQL: {e}")
+        return None
+    finally:
+        try:
+            if cursor:
+                cursor.close()
+        except Exception:
+            pass
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
 @app.route('/api/resource-emt', methods=['GET'])
 def get_resource_emt():
     """
     GET /api/resource-emt?resource=51-1034-02
-    Devuelve si el recurso de RecursosGis es EMT (1/0) y su código canónico.
+    GET /api/resource-emt?parada=788
+    Devuelve EMT (1/0) como en Elementos cerca (RecursosGis / MobiliarioGis).
     """
     try:
         resource = request.args.get('resource', '').strip()
-        if not resource:
-            return jsonify({'success': False, 'error': 'Falta el parámetro resource'}), 400
+        parada = request.args.get('parada', '').strip()
+        if not resource and not parada:
+            return jsonify({
+                'success': False,
+                'error': 'Falta el parámetro resource o parada'
+            }), 400
 
-        match = lookup_resource_emt_in_sql(resource)
+        match = None
+        if parada:
+            match = lookup_mobiliario_emt_in_sql(parada)
+        elif resource:
+            match = lookup_resource_emt_in_sql(resource)
+            # Si no está en RecursosGis, probar emplazamiento (mismo id que en mapa)
+            if not match:
+                match = lookup_mobiliario_emt_in_sql(resource)
+
         if not match:
             return jsonify({
                 'success': True,
                 'found': False,
-                'resource': resource,
+                'resource': resource or parada,
                 'emt': None,
-                'tipoElemento': ''
+                'tipoElemento': '',
+                'tipoParada': '',
+                'source': None,
             })
 
         return jsonify({
@@ -1998,7 +2228,9 @@ def get_resource_emt():
             'found': True,
             'resource': match['resource'],
             'emt': match['emt'],
-            'tipoElemento': match['tipoElemento'],
+            'tipoElemento': match.get('tipoElemento', ''),
+            'tipoParada': match.get('tipoParada', ''),
+            'source': match.get('source'),
         })
     except Exception as e:
         import traceback
@@ -2517,6 +2749,17 @@ def process_audio():
         if not audio_base64:
             return jsonify({'success': False, 'error': 'No se proporcionó audio'}), 400
 
+        if not WHISPER_AVAILABLE:
+            print("❌ Whisper no está instalado en este Python")
+            return jsonify({
+                'success': False,
+                'error': (
+                    'Whisper no está instalado en el servidor. '
+                    'Ejecuta install_whisper.bat (y asegúrate de tener FFmpeg). '
+                    'Para la descripción de fotos locales puedes usar el dictado del navegador.'
+                )
+            }), 503
+
         print("🎤 Procesando audio con Whisper...")
         
         # Procesar audio con Whisper
@@ -2544,7 +2787,9 @@ def process_audio():
         })
 
     except Exception as e:
+        import traceback
         print(f"❌ Error procesando audio: {e}")
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/process-image-ai', methods=['POST'])
@@ -3104,11 +3349,27 @@ def process_audio_with_whisper(audio_base64):
             os.environ["PATH"] = ffmpeg_path + os.pathsep + os.environ["PATH"]
             print(f"🔧 FFmpeg agregado al PATH: {ffmpeg_path}")
         
-        # Decodificar audio base64
-        audio_data = base64.b64decode(audio_base64.split(',')[1])
-        
-        # Crear archivo temporal con extensión .wav (formato que funciona con Whisper)
-        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_file:
+        # Decodificar audio base64 (data URL o base64 puro)
+        raw = audio_base64
+        if isinstance(raw, str) and ',' in raw and raw.strip().lower().startswith('data:'):
+            raw = raw.split(',', 1)[1]
+        audio_data = base64.b64decode(raw)
+
+        # Extensión según mime del data URL (Chrome suele enviar webm/opus)
+        suffix = '.webm'
+        if isinstance(audio_base64, str):
+            head = audio_base64[:64].lower()
+            if 'audio/wav' in head or 'audio/wave' in head:
+                suffix = '.wav'
+            elif 'audio/mp4' in head or 'audio/m4a' in head:
+                suffix = '.m4a'
+            elif 'audio/ogg' in head:
+                suffix = '.ogg'
+            elif 'audio/mpeg' in head or 'audio/mp3' in head:
+                suffix = '.mp3'
+
+        # Crear archivo temporal
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as temp_file:
             temp_file.write(audio_data)
             temp_file_path = temp_file.name
         
@@ -3191,8 +3452,9 @@ def extract_stop_info(text):
     Extrae el número de parada y descripción del texto transcrito
     """
     import re
-     # URL de LM Studio (puerto por defecto)
-    lm_studio_url = "http://192.168.10.238:1234/v1/chat/completions"
+    from config import LM_STUDIO_URL
+    # URL de LM Studio (desde .env)
+    lm_studio_url = LM_STUDIO_URL
         
         # Prompt para Llava - Versión que FUNCIONÓ (según el usuario)
         # El modelo primero describe lo que ve y luego extrae la información
@@ -3489,7 +3751,7 @@ def extract_stop_info_fallback(text):
 def process_image_with_lm_studio(image_base64):
     """
     Procesa imagen con LM Studio para extraer número de parada e incidencia
-    LM Studio debe estar corriendo en http://192.168.10.238:1234
+    LM Studio debe estar accesible en LM_STUDIO_URL (.env)
     """
     try:
         import re
@@ -3546,8 +3808,9 @@ def process_image_with_lm_studio(image_base64):
             except Exception as e:
                 print(f"⚠️ Error al reducir imagen: {e}, usando imagen original")
         
-        # URL de LM Studio (puerto por defecto)
-        lm_studio_url = "http://192.168.10.238:1234/v1/chat/completions"
+        from config import LM_STUDIO_URL
+        # URL de LM Studio (desde .env)
+        lm_studio_url = LM_STUDIO_URL
         
         # Prompt para Llava - Versión que FUNCIONÓ (según el usuario)
         # El modelo primero describe lo que ve y luego extrae la información
@@ -4027,7 +4290,15 @@ def process_image_with_lm_studio(image_base64):
                 print(f"❌ LM Studio error 404: {error_msg}")
                 return {
                     'success': False,
-                    'error': f'LM Studio no tiene un modelo cargado. Por favor:\n1. Abre LM Studio\n2. Ve a la pestaña "Developer"\n3. Carga un modelo (preferiblemente multimodal para visión)\n4. Asegúrate de que el servidor esté corriendo en http://192.168.10.238:1234\n\nError: {error_msg}'
+                    'error': (
+                        'LM Studio no tiene un modelo cargado. Por favor:\n'
+                        '1. Abre LM Studio\n'
+                        '2. Ve a la pestaña "Developer"\n'
+                        '3. Carga un modelo (preferiblemente multimodal para visión)\n'
+                        '4. Asegúrate de que el servidor esté corriendo '
+                        f'(LM_STUDIO_URL={LM_STUDIO_URL})\n\n'
+                        f'Error: {error_msg}'
+                    )
                 }
             else:
                 print(f"⚠️ LM Studio respondió con código {response.status_code}: {response.text}")
@@ -4051,7 +4322,12 @@ def process_image_with_lm_studio(image_base64):
             }
         
     except requests.exceptions.ConnectionError:
-        error_msg = 'No se puede conectar a LM Studio. Asegúrate de que:\n1. LM Studio esté corriendo\n2. El servidor local esté activo en http://192.168.10.238:1234\n3. Ve a la pestaña "Developer" en LM Studio y asegúrate de que el servidor esté iniciado'
+        error_msg = (
+            'No se puede conectar a LM Studio. Asegúrate de que:\n'
+            '1. LM Studio esté corriendo\n'
+            f'2. El servidor local esté activo ({LM_STUDIO_URL})\n'
+            '3. Ve a la pestaña "Developer" en LM Studio y asegúrate de que el servidor esté iniciado'
+        )
         print(f"❌ {error_msg}")
         return {
             'success': False,

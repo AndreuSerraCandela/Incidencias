@@ -43,9 +43,13 @@ Thumbs.db
 
 # Archivos temporales
 temp_uploads/
+pending_photos/
 *.tmp
 *.log
 
-# Archivos de credenciales
+# Archivos de credenciales / secretos
 mobile_storage_device_*.json
+.env
+.env.local
+.env.*.local
 

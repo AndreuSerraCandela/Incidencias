@@ -1,5 +1,39 @@
 # Archivo de configuración para la Aplicación de incidencias
 
+import os
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(Path(__file__).resolve().parent / '.env')
+except ImportError:
+    pass
+
+
+def _env(key, default=''):
+    val = os.getenv(key)
+    if val is None:
+        return default
+    return val
+
+
+def _env_int(key, default):
+    raw = os.getenv(key)
+    if raw is None or str(raw).strip() == '':
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_bool(key, default=True):
+    raw = os.getenv(key)
+    if raw is None or str(raw).strip() == '':
+        return default
+    return str(raw).strip().lower() in ('1', 'true', 't', 'yes', 'y', 'on')
+
+
 # Configuración de la API
 API_CONFIG = {
     'base_url': 'http://localhost:8080',
@@ -54,22 +88,42 @@ LOGGING_CONFIG = {
     'file': 'incidencias.log'
 }
 
-# Configuración de Business Central
+# Configuración de Business Central (credenciales desde .env)
 BC_CONFIG = {
-    'base_url': 'https://bc220.malla.es',
-    'endpoint': '/powerbi/ODataV4/GtaskMalla_PostFijacion',  # Endpoint para fijaciones
-    'endpoint_incidences': '/powerbi/ODataV4/GtaskMalla_PostIncidencia',  # Endpoint para incidencias (si existe)
-    'company': 'Malla Publicidad',
+    'base_url': _env('BC_BASE_URL', 'https://bc220.malla.es').rstrip('/'),
+    'endpoint': _env('BC_ENDPOINT', '/powerbi/ODataV4/GtaskMalla_PostFijacion'),
+    'endpoint_incidences': _env(
+        'BC_ENDPOINT_INCIDENCES',
+        '/powerbi/ODataV4/GtaskMalla_PostIncidencia',
+    ),
+    'company': _env('BC_COMPANY', 'Malla Publicidad'),
     'credentials': {
-        'username': 'debug',
-        'password': 'Ib6343ds.'
+        'username': _env('BC_USERNAME', ''),
+        'password': _env('BC_PASSWORD', ''),
     },
-    'timeout': 120,  # Aumentado a 2 minutos para imágenes grandes
-    'timeout_large_images': 300,  # 5 minutos para imágenes muy grandes
-    'max_image_size_mb': 10,  # Tamaño máximo antes de comprimir
-    'compress_quality': 85,  # Calidad de compresión JPEG (1-100)
-    'enable_compression': True  # Habilitar compresión automática
+    'timeout': _env_int('BC_TIMEOUT', 120),
+    'timeout_large_images': _env_int('BC_TIMEOUT_LARGE_IMAGES', 300),
+    'max_image_size_mb': _env_int('BC_MAX_IMAGE_SIZE_MB', 10),
+    'compress_quality': _env_int('BC_COMPRESS_QUALITY', 85),
+    'enable_compression': _env_bool('BC_ENABLE_COMPRESSION', True),
 }
+
+# SQL Server GIS — MobiliarioGis / RecursosGis (credenciales desde .env)
+GIS_SQL_CONFIG = {
+    'server': _env('GIS_SQL_SERVER', '192.168.10.190'),
+    'database': _env('GIS_SQL_DATABASE', 'Malla2009'),
+    'username': _env('GIS_SQL_USERNAME', ''),
+    'password': _env('GIS_SQL_PASSWORD', ''),
+}
+
+# Flask / sesión
+FLASK_SECRET_KEY = _env('FLASK_SECRET_KEY', 'cambiar_en_produccion')
+
+# LM Studio (visión)
+LM_STUDIO_URL = _env(
+    'LM_STUDIO_URL',
+    'http://192.168.10.238:1234/v1/chat/completions',
+)
 
 # Configuración de tipos de incidencia
 INCIDENCE_CONFIG = {
@@ -111,6 +165,43 @@ SEARCH_CONFIG = {
 # Función para obtener la URL completa de la API
 def get_api_url():
     return f"{API_CONFIG['base_url']}{API_CONFIG['endpoint']}"
+
+
+def get_gis_sql_connection(prefer_driver17=True):
+    """
+    Conexión ODBC a Malla2009 (GIS). Credenciales desde .env / GIS_SQL_CONFIG.
+    """
+    import pyodbc
+
+    server = GIS_SQL_CONFIG['server']
+    database = GIS_SQL_CONFIG['database']
+    username = GIS_SQL_CONFIG['username']
+    password = GIS_SQL_CONFIG['password']
+    if not username or not password:
+        raise ValueError(
+            'Faltan GIS_SQL_USERNAME / GIS_SQL_PASSWORD en el archivo .env'
+        )
+
+    drivers = (
+        ['ODBC Driver 17 for SQL Server', 'SQL Server']
+        if prefer_driver17
+        else ['SQL Server', 'ODBC Driver 17 for SQL Server']
+    )
+    last_err = None
+    for driver in drivers:
+        try:
+            return pyodbc.connect(
+                f'DRIVER={{{driver}}};'
+                f'SERVER={server};'
+                f'DATABASE={database};'
+                f'UID={username};'
+                f'PWD={password}'
+            )
+        except pyodbc.Error as e:
+            last_err = e
+            continue
+    raise last_err
+
 
 # Función para obtener la URL completa del sistema de tareas
 def get_task_system_url(qr_data):
