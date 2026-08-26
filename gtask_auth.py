@@ -243,5 +243,34 @@ class GTaskAuth:
         print("🔄 Token expirado o próximo a expirar")
         return False
 
+    def apply_sso_session(self, access_token: str, user_data: dict | None = None) -> None:
+        """Establece sesión GTask tras intercambio SSO del portal."""
+        token = (access_token or "").strip()
+        if not token:
+            raise ValueError("Token GTask requerido")
+        user = dict(user_data or {})
+        user_id = str(user.get("_id") or user.get("id") or "").strip()
+        username = str(user.get("username") or "").strip()
+        if not user_id and username:
+            user_id = username
+        if user_id and not user.get("_id"):
+            user["_id"] = user_id
+        self.access_token = token
+        self.current_user = user or None
+        self.token_expiry = self._read_token_expiry(token)
+
+    @staticmethod
+    def _read_token_expiry(access_token):
+        if not access_token:
+            return datetime.now() + timedelta(hours=24)
+        try:
+            decoded_token = jwt.decode(access_token, options={"verify_signature": False})
+            exp_timestamp = decoded_token.get("exp")
+            if exp_timestamp:
+                return datetime.fromtimestamp(exp_timestamp)
+        except Exception:
+            pass
+        return datetime.now() + timedelta(hours=24)
+
 # Instancia global del autenticador
 gtask_auth = GTaskAuth()

@@ -29,6 +29,7 @@ except ImportError:
 from config import *
 from gtask_auth import GTaskAuth
 from mobile_storage import MobileStorage
+import sso_auth
 
 app = Flask(__name__)
 CORS(app, resources={
@@ -342,7 +343,11 @@ def index():
             f"Incidencias: Página cargada con query → parada={parada!r}, recurso={recurso!r}, "
             f"id={id_incidencia!r} | URL: {request.url}"
         )
-    return render_template('index.html')
+    return render_template(
+        'index.html',
+        sso_enabled=sso_auth.is_sso_enabled(),
+        sso_launch_url=sso_auth.sso_launch_url(),
+    )
 
 @app.route('/api/scan-qr', methods=['POST'])
 def scan_qr():
@@ -3031,8 +3036,66 @@ def test_bc_connection():
         }), 500
 
 # ========================================
-# RUTAS DE AUTENTICACIÓN GTASK
+# RUTAS DE AUTENTICACIÓN GTASK / SSO
 # ========================================
+
+@app.route('/api/auth/sso/status', methods=['GET'])
+def auth_sso_status():
+    """Diagnóstico SSO (sin secretos)."""
+    return jsonify({'success': True, **sso_auth.sso_status_payload()})
+
+
+@app.route('/api/auth/sso/exchange', methods=['POST'])
+def auth_sso_exchange():
+    """Intercambia token SSO de appdesktop por sesión GTask (dual login)."""
+    if not sso_auth.is_sso_enabled():
+        status = sso_auth.sso_status_payload()
+        hint = (
+            'Configure MALLA_SSO_SECRET en el .env de Incidencias '
+            '(mismo valor que appdesktop) y reinicie la app.'
+        )
+        if not status.get('secret_configured'):
+            error = f'Login SSO no habilitado: falta MALLA_SSO_SECRET. {hint}'
+        else:
+            error = 'Login SSO no habilitado (SSO_LOGIN_ENABLED=false).'
+        return jsonify({
+            'success': False,
+            'error': error,
+            'sso_status': status,
+        }), 403
+
+    data = request.get_json(silent=True) or {}
+    token = (data.get('token') or '').strip()
+    try:
+        payload = sso_auth.verify_exchange_token(token)
+        user_data = sso_auth.build_user_data_from_sso(payload)
+        access_token = (payload.get('access_token') or '').strip()
+        device_session = get_current_device_session()
+        gtask_auth = device_session['gtask_auth']
+        mobile_storage = device_session['mobile_storage']
+        gtask_auth.apply_sso_session(access_token, user_data)
+        device_session['user_data'] = gtask_auth.current_user
+        mobile_storage.save_user_session(
+            gtask_auth.current_user,
+            gtask_auth.access_token,
+            gtask_auth.token_expiry,
+        )
+        device_id = session_manager.get_device_id_from_request(request)
+        return jsonify({
+            'success': True,
+            'user': {
+                '_id': gtask_auth.current_user['_id'],
+                'username': gtask_auth.current_user['username'],
+            },
+            'device_id': device_id,
+            'message': 'Login SSO exitoso',
+            'auth_method': 'sso',
+        })
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 401
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
 
 @app.route('/api/gtask/login', methods=['POST'])
 def gtask_login():

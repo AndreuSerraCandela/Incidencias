@@ -523,7 +523,7 @@ let deviceOrientationPermissionGranted = false;
 let elements = {};
 
 // Inicialización
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
     console.log('🚀 Inicializando aplicación...');
     
     // Definir elementos del DOM después de que esté cargado
@@ -669,15 +669,19 @@ document.addEventListener('DOMContentLoaded', function() {
         initializeEventListeners();
         checkDeviceCapabilities();
         checkCameraPermissions();
-        initializeAuth(); // Inicializar autenticación
+        initializeAuthListeners();
+
+        const ssoHandled = await procesarSsoTokenDesdeUrl();
+        if (!ssoHandled) {
+            await checkAuthStatus();
+        }
         
         // Activar reconocimiento de voz automático si el usuario ya está autenticado
-        // (se ejecutará después de verificar la autenticación)
         setTimeout(() => {
             if (isAuthenticated) {
                 activateVoiceCommandOnLoad();
             }
-        }, 3000); // Esperar 3 segundos para que se complete la verificación de autenticación
+        }, 3000);
     } else {
         console.error('❌ Elementos críticos no encontrados');
     }
@@ -6415,14 +6419,20 @@ let currentUser = null;
 let isAuthenticated = false;
 let deviceId = null;
 
-// Inicializar sistema de autenticación
-function initializeAuth() {
+const SSO_CONFIG = (() => {
+    try {
+        const el = document.getElementById('sso-config-json');
+        return el ? JSON.parse(el.textContent || '{}') : {};
+    } catch (e) {
+        return {};
+    }
+})();
+
+function initializeAuthListeners() {
     console.log('🔐 Inicializando sistema de autenticación GTask...');
     
-    // Generar o recuperar device_id
     initializeDeviceId();
     
-    // Agregar event listeners para login
     if (elements.loginBtn) {
         elements.loginBtn.addEventListener('click', function(e) {
             e.preventDefault();
@@ -6434,7 +6444,6 @@ function initializeAuth() {
         elements.logoutBtn.addEventListener('click', handleLogout);
     }
     
-    // Icono de usuario - mostrar login o logout según corresponda
     if (elements.userIconBtn) {
         elements.userIconBtn.addEventListener('click', handleUserIconClick);
     }
@@ -6445,8 +6454,64 @@ function initializeAuth() {
     } else {
         console.error('❌ No se encontró loginForm');
     }
-    
-    // Verificar estado de autenticación al cargar
+
+    const btnSsoMalla = document.getElementById('btnSsoMalla');
+    if (btnSsoMalla) {
+        btnSsoMalla.addEventListener('click', iniciarLoginSsoMalla);
+    }
+}
+
+async function procesarSsoTokenDesdeUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('sso_token');
+    if (!token) return false;
+    params.delete('sso_token');
+    const qs = params.toString();
+    const cleanUrl = window.location.pathname + (qs ? `?${qs}` : '');
+    window.history.replaceState({}, '', cleanUrl);
+    try {
+        const response = await fetch('/api/auth/sso/exchange', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Device-ID': deviceId,
+            },
+            body: JSON.stringify({ token }),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || 'No se pudo completar el acceso Malla');
+        }
+        currentUser = data.user;
+        isAuthenticated = true;
+        hideLoginModal();
+        updateUIForAuthenticatedUser();
+        console.log('✅ Login SSO exitoso:', currentUser.username);
+        return true;
+    } catch (error) {
+        const msg = error.message || 'No se pudo completar el acceso Malla';
+        showLoginStatus(
+            /404/i.test(msg)
+                ? 'SSO no disponible en el servidor. Usa login GTask o despliega la app.'
+                : msg,
+            'error'
+        );
+        showLoginModal();
+        return true;
+    }
+}
+
+function iniciarLoginSsoMalla() {
+    const url = (SSO_CONFIG && SSO_CONFIG.launch_url) || '';
+    if (!url) {
+        showLoginStatus('Login Malla no configurado', 'error');
+        return;
+    }
+    window.location.href = url;
+}
+
+function initializeAuth() {
+    initializeAuthListeners();
     checkAuthStatus();
 }
 
