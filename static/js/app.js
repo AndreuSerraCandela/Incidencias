@@ -664,6 +664,12 @@ document.addEventListener('DOMContentLoaded', async function() {
     console.log('loginUsername:', elements.loginUsername);
     console.log('loginPassword:', elements.loginPassword);
     
+    // SSO desde portal (también si el bootstrap inline ya limpió la URL)
+    let ssoHandled = await procesarSsoTokenDesdeUrl();
+    if (!ssoHandled) {
+        ssoHandled = applySsoBootstrapErrorIfAny();
+    }
+
     // Solo inicializar si los elementos críticos existen
     if (elements.loginBtn && elements.loginModal) {
         initializeEventListeners();
@@ -671,9 +677,10 @@ document.addEventListener('DOMContentLoaded', async function() {
         checkCameraPermissions();
         initializeAuthListeners();
 
-        const ssoHandled = await procesarSsoTokenDesdeUrl();
         if (!ssoHandled) {
             await checkAuthStatus();
+        } else if (isAuthenticated) {
+            updateUIForAuthenticatedUser();
         }
         
         // Activar reconocimiento de voz automático si el usuario ya está autenticado
@@ -692,6 +699,9 @@ document.addEventListener('DOMContentLoaded', async function() {
 function handleActionFromURL() {
     // Detectar si viene de un shortcut de Gemini
     const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('sso_token') || sessionStorage.getItem('incidencias_sso_processing')) {
+        return;
+    }
     const action = urlParams.get('action');
 
     // Enlace desde WhatsApp/GMalla: ?id=INV00028 (también ?Id=)
@@ -6462,6 +6472,9 @@ function initializeAuthListeners() {
 }
 
 async function procesarSsoTokenDesdeUrl() {
+    if (sessionStorage.getItem('incidencias_sso_processing')) {
+        return false;
+    }
     const params = new URLSearchParams(window.location.search);
     const token = params.get('sso_token');
     if (!token) return false;
@@ -6508,6 +6521,17 @@ function iniciarLoginSsoMalla() {
         return;
     }
     window.location.href = url;
+}
+
+function applySsoBootstrapErrorIfAny() {
+    const err = sessionStorage.getItem('incidencias_sso_error');
+    if (!err) return false;
+    sessionStorage.removeItem('incidencias_sso_error');
+    if (elements.loginStatus) {
+        showLoginStatus(err, 'error');
+    }
+    showLoginModal();
+    return true;
 }
 
 function initializeAuth() {

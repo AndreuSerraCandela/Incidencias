@@ -604,7 +604,48 @@
     </div>
 
     <script id="sso-config-json" type="application/json">{{ {'enabled': sso_enabled, 'launch_url': sso_launch_url} | tojson }}</script>
-    <script src="{{ url_for('static', filename='js/app.js') }}?v=2"></script>
+    <script>
+    (function () {
+        try {
+            var params = new URLSearchParams(window.location.search);
+            var token = params.get('sso_token');
+            if (!token) return;
+            if (sessionStorage.getItem('incidencias_sso_processing') === token) return;
+            var deviceId = localStorage.getItem('incidencias_device_id');
+            if (!deviceId) {
+                deviceId = 'device_' + Date.now() + '_' + Math.random().toString(36).slice(2, 11);
+                localStorage.setItem('incidencias_device_id', deviceId);
+            }
+            sessionStorage.setItem('incidencias_sso_processing', token);
+            fetch('/api/auth/sso/exchange', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-Device-ID': deviceId },
+                body: JSON.stringify({ token: token })
+            }).then(function (r) {
+                return r.json().then(function (d) { return { ok: r.ok, status: r.status, data: d }; });
+            }).then(function (res) {
+                sessionStorage.removeItem('incidencias_sso_processing');
+                params.delete('sso_token');
+                var clean = window.location.pathname + (params.toString() ? '?' + params.toString() : '') + window.location.hash;
+                if (!res.ok || !res.data || !res.data.success) {
+                    var err = (res.data && res.data.error) || ('SSO HTTP ' + res.status);
+                    sessionStorage.setItem('incidencias_sso_error', err);
+                    history.replaceState({}, '', clean);
+                    return;
+                }
+                window.location.replace(clean);
+            }).catch(function (err) {
+                sessionStorage.removeItem('incidencias_sso_processing');
+                sessionStorage.setItem('incidencias_sso_error', String(err && err.message || err));
+                params.delete('sso_token');
+                history.replaceState({}, '', window.location.pathname + (params.toString() ? '?' + params.toString() : '') + window.location.hash);
+            });
+        } catch (e) {
+            sessionStorage.removeItem('incidencias_sso_processing');
+        }
+    })();
+    </script>
+    <script src="{{ url_for('static', filename='js/app.js') }}?v=3"></script>
     
     <!-- PWA Service Worker Registration -->
     <script>
