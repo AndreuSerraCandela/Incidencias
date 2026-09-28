@@ -2337,12 +2337,62 @@ def get_resources_with_open_incidences_for_user(resource_ids, gtask_user_id):
         return resources_with_incidences
 
 
+def _map_lista_incidencia_row_to_open_api(inc):
+    """Mapea una fila OData de ListaIncidencias al JSON que usa el frontend para cerrar."""
+    from config import normalize_incidence_subtype_input, get_default_incidence_subtype
+
+    subtipo = (
+        inc.get("SubtipoIncidencia")
+        or inc.get("subtipoIncidencia")
+        or inc.get("IncidenceSubType")
+        or inc.get("Subtipo")
+        or inc.get("subtipo")
+        or ""
+    )
+    sub_str = str(subtipo).strip() if subtipo else ""
+    sub_ui = normalize_incidence_subtype_input(sub_str)
+    if not sub_ui:
+        sub_ui = get_default_incidence_subtype()
+    recurso = str(inc.get("Recurso") or "").strip()
+    doc_no = _bc_document_no_from_lista_row(inc)
+    return {
+        "documentNo": doc_no,
+        "resource": recurso,
+        "description": (
+            inc.get("Descripcion") or inc.get("descripcion") or inc.get("Description") or ""
+        ),
+        "incidenceType": (
+            inc.get("TipoIncidencia")
+            or inc.get("tipoIncidencia")
+            or inc.get("IncidenceType")
+            or "EMT"
+        ),
+        "incidenceSubType": sub_ui,
+        "observation": (
+            inc.get("Observacion") or inc.get("observacion") or inc.get("Observation") or ""
+        ),
+    }
+
+
+def _open_incidences_for_user_from_rows(incidencias, gtask_user_id):
+    user_id_str = str(gtask_user_id).strip()
+    result = []
+    for inc in incidencias or []:
+        inc_user_id = str(inc.get("Id_Uduario_Gtask") or "").strip()
+        if inc_user_id != user_id_str:
+            continue
+        mapped = _map_lista_incidencia_row_to_open_api(inc)
+        if mapped.get("documentNo"):
+            result.append(mapped)
+    return result
+
+
 def get_open_incidences_for_resource(resource_id, gtask_user_id):
     """
     Consulta en Business Central las incidencias abiertas para un recurso y usuario.
     Devuelve una lista de incidencias con los campos necesarios para reenviar (EnProgreso/Cerrada).
     """
-    from config import BC_CONFIG, get_bc_auth_header, normalize_incidence_subtype_input
+    from config import BC_CONFIG, get_bc_auth_header
 
     try:
         if not resource_id or not gtask_user_id:
@@ -2373,46 +2423,53 @@ def get_open_incidences_for_resource(resource_id, gtask_user_id):
 
         data = resp.json()
         incidencias = data.get("value", [])
-        user_id_str = str(gtask_user_id).strip()
-        result = []
-
-        for inc in incidencias:
-            inc_user_id = str(inc.get("Id_Uduario_Gtask") or "").strip()
-            if inc_user_id != user_id_str:
-                continue
-            recurso = str(inc.get("Recurso") or "").strip()
-            # Mapear campos BC al formato esperado por el frontend
-            subtipo = (
-                inc.get("SubtipoIncidencia")
-                or inc.get("subtipoIncidencia")
-                or inc.get("IncidenceSubType")
-                or inc.get("Subtipo")
-                or inc.get("subtipo")
-                or ""
-            )
-            sub_str = str(subtipo).strip() if subtipo else ""
-            sub_ui = normalize_incidence_subtype_input(sub_str)
-            if not sub_ui:
-                from config import get_default_incidence_subtype
-                sub_ui = get_default_incidence_subtype()
-            doc_no = _bc_document_no_from_lista_row(inc)
-            result.append({
-                "documentNo": doc_no,
-                "resource": recurso,
-                "description": (
-                    inc.get("Descripcion") or inc.get("descripcion") or inc.get("Description") or ""
-                ),
-                "incidenceType": (
-                    inc.get("TipoIncidencia") or inc.get("tipoIncidencia") or inc.get("IncidenceType") or "EMT"
-                ),
-                "incidenceSubType": sub_ui,
-                "observation": (
-                    inc.get("Observacion") or inc.get("observacion") or inc.get("Observation") or ""
-                ),
-            })
-        return result
+        return _open_incidences_for_user_from_rows(incidencias, gtask_user_id)
     except Exception as e:
         print(f"⚠️ Error al obtener incidencias abiertas para recurso: {e}")
+        return []
+
+
+def get_open_incidences_for_user(gtask_user_id):
+    """
+    Incidencias abiertas del usuario actual (todas las que tenga en BC).
+    """
+    from config import BC_CONFIG, get_bc_auth_header
+
+    try:
+        if not gtask_user_id:
+            return []
+
+        base_url = BC_CONFIG['base_url']
+        company = BC_CONFIG.get('company', 'Malla Publicidad')
+        company_encoded = quote(company)
+        lista_url = (
+            f"{base_url}/powerbi/ODataV4/Company('{company_encoded}')/ListaIncidencias"
+        )
+        headers = {
+            "Authorization": get_bc_auth_header(),
+            "Accept": "application/json",
+        }
+        timeout = BC_CONFIG.get("timeout", 60)
+        params = {
+            "$filter": "Estado eq 'Abierta'",
+            "$top": "1000",
+        }
+
+        resp = requests.get(lista_url, headers=headers, params=params, timeout=timeout)
+        if resp.status_code != 200:
+            print(
+                f"⚠️ Error al obtener incidencias abiertas del usuario: "
+                f"{resp.status_code} - {resp.text[:200]}"
+            )
+            return []
+
+        data = resp.json()
+        incidencias = data.get("value", [])
+        rows = _open_incidences_for_user_from_rows(incidencias, gtask_user_id)
+        rows.sort(key=lambda r: str(r.get("documentNo") or ""), reverse=True)
+        return rows
+    except Exception as e:
+        print(f"⚠️ Error al obtener incidencias abiertas del usuario: {e}")
         return []
 
 
@@ -2664,13 +2721,11 @@ def get_incidence_for_user_by_document_no(document_no, gtask_user_id):
 @app.route('/api/open-incidences', methods=['GET'])
 def get_open_incidences():
     """
-    GET /api/open-incidences?resource=XXX
-    Devuelve las incidencias abiertas para el recurso dado y el usuario de la sesión actual.
+    GET /api/open-incidences?resource=XXX — abiertas de ese recurso y usuario.
+    GET /api/open-incidences — todas las abiertas del usuario (Mis Incidencias).
     """
     try:
         resource = request.args.get('resource', '').strip()
-        if not resource:
-            return jsonify({'success': False, 'error': 'Falta el parámetro resource'}), 400
 
         device_session = get_current_device_session()
         if not device_session:
@@ -2683,8 +2738,11 @@ def get_open_incidences():
         if not user_id or (isinstance(user_id, str) and not user_id.strip()):
             return jsonify({'success': False, 'error': 'No hay usuario autenticado'}), 401
 
-        incidences = get_open_incidences_for_resource(resource, user_id)
-        return jsonify({'success': True, 'incidences': incidences})
+        if resource:
+            incidences = get_open_incidences_for_resource(resource, user_id)
+        else:
+            incidences = get_open_incidences_for_user(user_id)
+        return jsonify({'success': True, 'incidences': incidences, 'count': len(incidences)})
     except Exception as e:
         import traceback
         print(f"❌ Error en get_open_incidences: {e}\n{traceback.format_exc()}")

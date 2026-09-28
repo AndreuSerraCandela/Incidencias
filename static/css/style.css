@@ -1586,12 +1586,23 @@ main {
    ======================================== */
 
 /* Indicador de usuario */
-/* Icono de usuario en la esquina superior derecha */
+/* Usuario + micrófono en la esquina superior derecha */
+.header-user-area {
+    position: absolute;
+    top: 0;
+    right: 5px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    z-index: 1000;
+}
+
 .user-icon-btn {
     position: relative;
-    float: right;
-    top: 0px;
-    right: 5px;
+    float: none;
+    top: auto;
+    right: auto;
     width: 45px;
     height: 45px;
     border-radius: 50%;
@@ -1622,6 +1633,71 @@ main {
 
 .user-icon-btn:active {
     transform: scale(0.95);
+}
+
+.user-mic-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    background: white;
+    border: 2px solid var(--malla-hover);
+    color: var(--malla-hover);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    transition: all 0.2s ease;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+    padding: 0;
+}
+
+.user-mic-btn:hover {
+    background: var(--malla-hover);
+    color: white;
+    transform: scale(1.05);
+}
+
+.user-mic-btn:active {
+    transform: scale(0.95);
+}
+
+.my-open-incidences-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 60vh;
+    overflow-y: auto;
+}
+
+.my-open-incidence-item {
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 12px;
+    background: #fafafa;
+}
+
+.my-open-incidence-item h4 {
+    margin: 0 0 6px;
+    font-size: 15px;
+    color: var(--malla-hover);
+}
+
+.my-open-incidence-item p {
+    margin: 4px 0;
+    font-size: 13px;
+    line-height: 1.4;
+}
+
+.my-open-incidence-item .btn-close-my-incidence {
+    margin-top: 10px;
+    width: 100%;
+}
+
+.my-open-incidences-status {
+    font-size: 14px;
+    color: #666;
+    margin-bottom: 10px;
 }
 
 .user-indicator {
@@ -1798,12 +1874,21 @@ main {
 
 /* Responsive para login */
 @media (max-width: 768px) {
+    .header-user-area {
+        right: 0;
+        gap: 4px;
+    }
+
     .user-icon-btn {
-        top: 0px;
-        right:0px;
         width: 40px;
         height: 40px;
         font-size: 18px;
+    }
+
+    .user-mic-btn {
+        width: 34px;
+        height: 34px;
+        font-size: 14px;
     }
     
     #setupAssistantBtn {

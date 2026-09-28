@@ -74,10 +74,16 @@
             </h1>
             <p class="subtitle">Reporta incidencias en paradas de bus con audio y fotos</p>
             
-            <!-- Icono de usuario en la esquina superior derecha -->
-            <button id="userIconBtn" class="user-icon-btn" title="Usuario">
-                <i class="fas fa-user"></i>
-            </button>
+            <!-- Usuario + micrófono (grabar audio) -->
+            <div class="header-user-area">
+                <button id="userIconBtn" class="user-icon-btn" title="Usuario" type="button">
+                    <i class="fas fa-user"></i>
+                </button>
+                <button id="recordAudioBtn" class="user-mic-btn" type="button"
+                        title="Grabar audio" aria-label="Grabar audio" style="display: none;">
+                    <i class="fas fa-microphone"></i>
+                </button>
+            </div>
             
         </header>
         
@@ -166,8 +172,8 @@
             <div id="actionButtons" class="action-buttons" style="display: none;">
                 <div class="action-buttons-row">
                     <div class="audio-buttons-column">
-                        <button id="recordAudioBtn" class="btn btn-secondary btn-audio-main">
-                            <i class="fas fa-microphone"></i> Grabar Audio
+                        <button id="myOpenIncidencesBtn" class="btn btn-secondary btn-audio-main">
+                            <i class="fas fa-clipboard-list"></i> Mis Incidencias
                         </button>
                         <button id="nearbyElementsBtn" class="btn btn-primary btn-audio-secondary">
                             <i class="fas fa-map-marker-alt"></i> Elementos Cerca
@@ -557,6 +563,25 @@
                         <i class="fas fa-info-circle"></i> No hay fotos guardadas sin asignar.
                     </p>
                     <div id="unassignedPhotosList" class="unassigned-photos-list"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Modal: mis incidencias abiertas -->
+        <div id="myOpenIncidencesModal" class="modal" style="display: none;">
+            <div class="modal-content" style="max-width: 560px;">
+                <div class="modal-header">
+                    <h3><i class="fas fa-clipboard-list"></i> Mis Incidencias</h3>
+                    <button type="button" class="close-btn" id="closeMyOpenIncidencesModal" aria-label="Cerrar">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <p id="myOpenIncidencesStatus" class="my-open-incidences-status">
+                        <i class="fas fa-spinner fa-spin"></i> Cargando incidencias abiertas…
+                    </p>
+                    <p id="myOpenIncidencesEmpty" class="assign-photo-empty" style="display: none;">
+                        <i class="fas fa-info-circle"></i> No tienes incidencias abiertas.
+                    </p>
+                    <div id="myOpenIncidencesList" class="my-open-incidences-list"></div>
                 </div>
             </div>
         </div>

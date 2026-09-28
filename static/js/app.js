@@ -60,6 +60,7 @@ const DEEP_LINK_INCIDENCE_STORAGE_KEY = 'incidencias_deep_link_no';
 const PENDING_NEARBY_STORAGE_KEY = 'incidencias_pending_nearby';
 let _deepLinkIncidenceInFlight = false;
 let _lastAssignedIncidencePayload = null;
+let myOpenIncidencesCache = [];
 
 /** Subtipos permitidos según tipo: EMT sin Otras/Poda; no EMT sin Tip */
 function filterSubtypesForIncidenceType(incidenceType, allSubtypes) {
@@ -619,6 +620,12 @@ document.addEventListener('DOMContentLoaded', async function() {
         
         // Elementos del modal de elementos cercanos
         nearbyElementsBtn: document.getElementById('nearbyElementsBtn'),
+        myOpenIncidencesBtn: document.getElementById('myOpenIncidencesBtn'),
+        myOpenIncidencesModal: document.getElementById('myOpenIncidencesModal'),
+        closeMyOpenIncidencesModal: document.getElementById('closeMyOpenIncidencesModal'),
+        myOpenIncidencesList: document.getElementById('myOpenIncidencesList'),
+        myOpenIncidencesEmpty: document.getElementById('myOpenIncidencesEmpty'),
+        myOpenIncidencesStatus: document.getElementById('myOpenIncidencesStatus'),
         nearbyElementsModal: document.getElementById('nearbyElementsModal'),
         nearbyModalTitle: document.getElementById('nearbyModalTitle'),
         expandNearbyRadiusBtn: document.getElementById('expandNearbyRadiusBtn'),
@@ -1164,6 +1171,24 @@ function initializeEventListeners() {
             if (!ensureAuthenticatedForAction('nearby')) return;
             stopNFCScanning();
             showNearbyElements();
+        });
+    }
+
+    if (elements.myOpenIncidencesBtn) {
+        elements.myOpenIncidencesBtn.addEventListener('click', () => {
+            if (!ensureAuthenticatedForAction('my_incidences')) return;
+            stopNFCScanning();
+            openMyOpenIncidencesModal();
+        });
+    }
+    if (elements.closeMyOpenIncidencesModal) {
+        elements.closeMyOpenIncidencesModal.addEventListener('click', closeMyOpenIncidencesModal);
+    }
+    if (elements.myOpenIncidencesModal) {
+        elements.myOpenIncidencesModal.addEventListener('click', (event) => {
+            if (event.target === elements.myOpenIncidencesModal) {
+                closeMyOpenIncidencesModal();
+            }
         });
     }
 
@@ -2545,8 +2570,14 @@ async function postIncidenceApi(payload) {
 }
 
 function closeIncidenceDescription(p) {
-    const d = String(p.description || '').trim();
+    const d = String(p.description || p.descripcion || '').trim();
     if (d) return d;
+    const o = String(p.observation || '').trim();
+    if (o) return o;
+    return '';
+}
+
+function closeIncidenceObservation(p) {
     const o = String(p.observation || '').trim();
     if (o) return o;
     const doc = String(p.documentNo || '').trim();
@@ -2586,7 +2617,7 @@ async function submitCloseIncidenceWithPhotos(photosToSend) {
     const baseFields = {
         incidenceType: p.incidenceType || INCIDENCE_TYPE_FALLBACK,
         incidenceSubType: p.incidenceSubType,
-        observation: p.observation || '',
+        observation: closeIncidenceObservation(p),
         description: desc,
         resource: p.resource,
         documentNo: docNo
@@ -6782,6 +6813,9 @@ function updateUIForAuthenticatedUser() {
         elements.userIconBtn.style.backgroundColor = '#28a745'; // verde validado
         elements.userIconBtn.style.color = '#ffffff';
     }
+    if (elements.recordAudioBtn) {
+        elements.recordAudioBtn.style.display = 'flex';
+    }
     
     
     // Habilitar botones de acción
@@ -6821,6 +6855,10 @@ function updateUIForUnauthenticatedUser() {
         elements.userIconBtn.style.backgroundColor = '#dc3545'; // rojo
         elements.userIconBtn.style.color = '#ffffff';
     }
+    if (elements.recordAudioBtn) {
+        elements.recordAudioBtn.style.display = 'none';
+    }
+    closeMyOpenIncidencesModal();
     
     
     // Deshabilitar botones de acción y detener NFC
@@ -8612,6 +8650,112 @@ async function closeIncidenceFromElement(elementIndex) {
 // Hacer función global para el botón del popup
 window.createIncidenceFromElement = createIncidenceFromElement;
 window.closeIncidenceFromElement = closeIncidenceFromElement;
+
+function closeMyOpenIncidencesModal() {
+    if (elements.myOpenIncidencesModal) {
+        elements.myOpenIncidencesModal.style.display = 'none';
+    }
+}
+
+async function openMyOpenIncidencesModal() {
+    if (!elements.myOpenIncidencesModal) return;
+    elements.myOpenIncidencesModal.style.display = 'block';
+    await refreshMyOpenIncidencesList();
+}
+
+async function refreshMyOpenIncidencesList() {
+    if (!elements.myOpenIncidencesList) return;
+    if (elements.myOpenIncidencesStatus) {
+        elements.myOpenIncidencesStatus.style.display = 'block';
+        elements.myOpenIncidencesStatus.innerHTML =
+            '<i class="fas fa-spinner fa-spin"></i> Cargando incidencias abiertas…';
+    }
+    if (elements.myOpenIncidencesEmpty) {
+        elements.myOpenIncidencesEmpty.style.display = 'none';
+    }
+    elements.myOpenIncidencesList.innerHTML = '';
+
+    try {
+        const res = await fetch('/api/open-incidences', {
+            headers: { 'X-Device-ID': deviceId }
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!data.success) {
+            throw new Error(data.error || 'No se pudieron cargar las incidencias');
+        }
+        myOpenIncidencesCache = data.incidences || [];
+        if (elements.myOpenIncidencesStatus) {
+            elements.myOpenIncidencesStatus.style.display = 'none';
+        }
+        if (!myOpenIncidencesCache.length) {
+            if (elements.myOpenIncidencesEmpty) {
+                elements.myOpenIncidencesEmpty.style.display = 'block';
+            }
+            return;
+        }
+        myOpenIncidencesCache.forEach((inc, index) => {
+            const item = document.createElement('div');
+            item.className = 'my-open-incidence-item';
+            const desc = (inc.description || '').trim();
+            const tipo = `${inc.incidenceType || ''} — ${inc.incidenceSubType || ''}`.trim();
+            item.innerHTML =
+                `<h4><i class="fas fa-file-alt"></i> ${escapeHtmlBasic(inc.documentNo || 'Sin nº')}</h4>` +
+                `<p><strong>Recurso:</strong> ${escapeHtmlBasic(inc.resource || '—')}</p>` +
+                (tipo ? `<p><strong>Tipo:</strong> ${escapeHtmlBasic(tipo)}</p>` : '') +
+                (desc ? `<p><strong>Descripción:</strong> ${escapeHtmlBasic(desc)}</p>` : '') +
+                `<button type="button" class="btn btn-secondary btn-close-my-incidence" data-index="${index}">` +
+                '<i class="fas fa-check-circle"></i> Cerrar incidencia</button>';
+            const btn = item.querySelector('.btn-close-my-incidence');
+            if (btn) {
+                btn.addEventListener('click', () => closeIncidenceFromMyList(index));
+            }
+            elements.myOpenIncidencesList.appendChild(item);
+        });
+    } catch (e) {
+        console.error('Error cargando mis incidencias:', e);
+        if (elements.myOpenIncidencesStatus) {
+            elements.myOpenIncidencesStatus.style.display = 'block';
+            elements.myOpenIncidencesStatus.innerHTML =
+                `<i class="fas fa-exclamation-triangle"></i> ${escapeHtmlBasic(e.message || 'Error al cargar')}`;
+        }
+        showStatus(e.message || 'Error al cargar mis incidencias', 'error');
+    }
+}
+
+async function closeIncidenceFromMyList(index) {
+    try {
+        const inc = myOpenIncidencesCache[index];
+        if (!inc) {
+            showStatus('Incidencia no encontrada', 'error');
+            return;
+        }
+        if (!String(inc.documentNo || '').trim()) {
+            showStatus(
+                'La incidencia no tiene número de documento en BC. No se puede cerrar.',
+                'error'
+            );
+            return;
+        }
+        const resource = inc.resource;
+        if (!resource) {
+            showStatus('La incidencia no tiene recurso asociado', 'error');
+            return;
+        }
+        const qrOverride = resource.startsWith('PARADA_')
+            ? resource.replace(/^PARADA_/, '')
+            : resource;
+        closeMyOpenIncidencesModal();
+        await sendEnProgresoAndOpenCloseCamera(inc, resource, {
+            closeNearbyModal: false,
+            currentQrOverride: qrOverride
+        });
+    } catch (error) {
+        console.error('Error al cerrar incidencia desde Mis Incidencias:', error);
+        showStatus('Error: ' + (error.message || 'Error al cerrar incidencia'), 'error');
+    }
+}
+
+window.closeIncidenceFromMyList = closeIncidenceFromMyList;
 
 // Cerrar modal de elementos cercanos
 function closeNearbyElementsModal(options = {}) {
